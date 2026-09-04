@@ -16,6 +16,13 @@ case "$1 $2" in
     printf '{"result":{"process_info":{"pane_id":"p","shell_pid":1,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"agent"}]}}}\n' \
       "$pid" "$pid"
     ;;
+  "agent list")
+    printf '{"result":{"agents":[{"pane_id":"%s","agent":"stub","agent_status":"%s","cwd":"%s","foreground_cwd":"%s"}]}}\n' \
+      "${HERDR_PANE_ID:-wT:p9}" "${HD_STUB_STATUS:-idle}" "$PWD" "$PWD"
+    ;;
+  "pane list")
+    printf '{"result":{"panes":[{"pane_id":"%s"}]}}\n' "${HERDR_PANE_ID:-wT:p9}"
+    ;;
   "agent get")
     printf '{"result":{"agent":{"agent_status":"%s"}}}\n' "${HD_STUB_STATUS:-idle}"
     ;;

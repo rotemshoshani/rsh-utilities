@@ -48,6 +48,10 @@ def build_parser():
         "--deadline", metavar="DUR", help="give up polling after this (default %s)" % DEFAULT_DEADLINE
     )
     parser.add_argument("--reason", metavar="TEXT", help="what this wait is for")
+    parser.add_argument(
+        "--pane", metavar="ID",
+        help="pane to wake; only needed when it cannot be resolved automatically",
+    )
     return parser
 
 
@@ -68,8 +72,8 @@ def parse_args(argv):
         elif positional:
             raise UsageError("unexpected arguments: %s" % " ".join(positional))
 
-    if not args.until and not args.in_:
-        raise UsageError("nothing to wait for: pass a duration, --in, or --until")
+    if not args.until and not args.in_ and not args.then:
+        raise UsageError("nothing to wait for: pass a duration, --in, --then, or --until")
 
     if not args.until and (args.every or args.deadline):
         raise UsageError("--every and --deadline apply to --until only")
@@ -88,6 +92,7 @@ def parse_args(argv):
 
     return {
         "version": state_mod.VERSION,
+        "pane": args.pane,
         "mode": mode,
         "command": command,
         "reason": args.reason,
@@ -104,10 +109,110 @@ def require_herdr():
             "There is no fallback: a blocking sleep would pin the agent's turn, "
             "which is the thing this tool exists to avoid."
         )
-    pane = os.environ.get("HERDR_PANE_ID")
-    if not pane:
-        raise EnvironmentError("HERDR_PANE_ID is not set")
-    return pane
+
+
+def _ancestry():
+    """argv[0] basenames from this process up to init."""
+    names = []
+    pid = os.getpid()
+    for _ in range(40):
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as handle:
+                argv0 = handle.read().split(b"\0")[0].decode("utf-8", "replace")
+            with open("/proc/%d/stat" % pid) as handle:
+                pid = int(handle.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+        if argv0:
+            names.append(os.path.basename(argv0))
+        if pid <= 1:
+            break
+    return names
+
+
+def caller_agent_kind(agents):
+    """Which kind of agent invoked us, read off our own process ancestry.
+
+    Codex's app-server breaks the pane environment but not this: the shell
+    command still runs underneath a process named `codex`.
+    """
+    kinds = {a.get("agent") for a in agents if a.get("agent")}
+    for name in _ancestry():
+        if name in kinds:
+            return name
+    return None
+
+
+def _same_cwd(agent, cwd):
+    for key in ("foreground_cwd", "cwd"):
+        value = agent.get(key)
+        if value and os.path.realpath(value) == cwd:
+            return True
+    return False
+
+
+def resolve_pane(hd, explicit=None):
+    """Find the pane to wake, and report how we found it.
+
+    $HERDR_PANE_ID is the fast path but cannot be trusted on its own. Codex
+    delegates shell commands to a long-lived app-server process whose
+    environment belongs to whichever pane first launched it -- frequently a
+    pane that no longer exists -- so the variable can name a dead pane while
+    the agent is very much alive somewhere else.
+    """
+    agents = hd.agent_list()
+    by_pane = {a.get("pane_id"): a for a in agents}
+
+    if explicit:
+        if explicit not in by_pane:
+            raise EnvironmentError("no agent is running in pane %s" % explicit)
+        return explicit, "explicit"
+
+    env_pane = os.environ.get("HERDR_PANE_ID")
+    if env_pane and env_pane in by_pane:
+        return env_pane, "environment"
+
+    if env_pane:
+        try:
+            live = env_pane in hd.pane_ids()
+        except hd.HerdrError:
+            live = False
+        if live:
+            raise EnvironmentError(
+                "pane %s has no agent to wake" % env_pane
+            )
+
+    cwd = os.path.realpath(os.getcwd())
+    same_cwd = [a for a in agents if _same_cwd(a, cwd)]
+    kind = caller_agent_kind(agents)
+
+    def working(pool):
+        return [a for a in pool if a.get("agent_status") == "working"]
+
+    pools = []
+    if kind:
+        kin = [a for a in same_cwd if a.get("agent") == kind]
+        pools += [(working(kin), "kind+cwd+working"), (kin, "kind+cwd")]
+        all_kin = [a for a in agents if a.get("agent") == kind]
+        pools.append((working(all_kin), "kind+working"))
+    pools += [(working(same_cwd), "cwd+working"), (same_cwd, "cwd")]
+
+    for candidates, how in pools:
+        if len(candidates) == 1:
+            return candidates[0]["pane_id"], how
+
+    detail = ", ".join(
+        "%s (%s, %s)" % (a.get("pane_id"), a.get("agent"), a.get("agent_status"))
+        for a in same_cwd
+    ) or "none"
+    raise EnvironmentError(
+        "cannot tell which pane to wake.\n"
+        "  HERDR_PANE_ID : %s\n"
+        "  caller kind   : %s\n"
+        "  agents in %s : %s\n"
+        "Pass --pane <id> explicitly."
+        % (env_pane or "unset", kind or "unknown", cwd, detail)
+    )
 
 
 def cmd_cancel(pane, out):
@@ -161,7 +266,7 @@ def main(argv, out=None, hd=herdr_cli):
         return waiter_main(argv[1:])
 
     try:
-        pane = require_herdr()
+        require_herdr()
     except EnvironmentError as exc:
         print("herdr-delay: %s" % exc, file=sys.stderr)
         return EXIT_ENV
@@ -170,6 +275,11 @@ def main(argv, out=None, hd=herdr_cli):
         if len(argv) > 1:
             print("herdr-delay: %s takes no arguments" % argv[0], file=sys.stderr)
             return EXIT_USAGE
+        try:
+            pane, _ = resolve_pane(hd)
+        except (EnvironmentError, hd.HerdrError) as exc:
+            print("herdr-delay: %s" % exc, file=sys.stderr)
+            return EXIT_ENV
         return cmd_cancel(pane, out) if argv[0] == "cancel" else cmd_status(pane, out)
 
     try:
@@ -178,10 +288,12 @@ def main(argv, out=None, hd=herdr_cli):
         print("herdr-delay: %s" % exc, file=sys.stderr)
         return EXIT_USAGE
 
+    pane_override = state.pop("pane")
     try:
+        pane, how = resolve_pane(hd, pane_override)
         agent_pid = hd.foreground_group_id(pane)
-    except hd.HerdrError as exc:
-        print("herdr-delay: cannot inspect pane %s (%s)" % (pane, exc.code), file=sys.stderr)
+    except (EnvironmentError, hd.HerdrError) as exc:
+        print("herdr-delay: %s" % exc, file=sys.stderr)
         return EXIT_ENV
 
     state.update({
@@ -199,6 +311,9 @@ def main(argv, out=None, hd=herdr_cli):
 
     waiter_pid = spawn_waiter(state)
 
+    if how != "environment":
+        print("[herdr-delay] resolved pane %s by %s (HERDR_PANE_ID was %s)."
+              % (pane, how, os.environ.get("HERDR_PANE_ID") or "unset"), file=out)
     if replaced:
         age = int(time.time() - replaced["started_unix"])
         print("[herdr-delay] replaced the waiter already running for this pane "

@@ -38,9 +38,9 @@ Durations accept `90`, `90s`, `10m`, `2h`, `1h30m`, and `slp`-compatible
 `MM:SS` / `HH:MM:SS`. Defaults: `--every 30s`, `--deadline 30m`. Hard ceiling
 of 24h on any wait, so nothing outlives the session it was scheduled from.
 
-The agent never passes a pane ID. The front reads `$HERDR_PANE_ID`, which
-Herdr injects into every managed pane. That is what makes the invocation a
-true one-liner and keeps the agent from having to reason about topology.
+The agent never passes a pane ID; the front works out which pane to wake. See
+"Resolving the pane" below — the obvious approach does not survive contact with
+Codex.
 
 Outside Herdr (`HERDR_ENV != 1`) the tool exits 2 with a clear message rather
 than degrading to a blocking sleep. A silent fallback that pins the agent's
@@ -94,6 +94,42 @@ with a sibling `.log`. Pane IDs contain `:` and are sanitized for filenames.
 `cancel` signals the waiter's process group, so a check command running at
 that moment dies with its waiter. A state file whose pid is dead counts as
 absent.
+
+## Resolving the pane
+
+`$HERDR_PANE_ID` is the obvious answer and it is wrong often enough to matter.
+
+Codex delegates shell execution to a long-lived app-server process rather than
+running commands as a child of the pane's TUI. That process is started once and
+reused, so its environment belongs to whichever pane first launched it. On the
+machine this was developed against, three such processes were carrying
+`HERDR_PANE_ID=wN:pB` — a pane that no longer existed. A `herdr-delay`
+invoked from a Codex pane read that value and failed with `pane_not_found`,
+while the Codex agent was alive and visible in `wN:pP`.
+
+The process ancestry of that shell command was `bash -> codex -> codex`, none
+of which belong to any live pane, and it had no controlling tty. So there is
+nothing in the calling process that points at the right pane. Claude and Pi are
+unaffected: their tool commands run under the pane's own process and the
+variable is correct.
+
+Resolution is therefore a ladder, and reports which rung it used:
+
+1. `--pane ID` if given, validated against the live agent list.
+2. `$HERDR_PANE_ID`, if a live agent occupies that pane.
+3. If the variable names a live pane with no agent, stop — there is nothing to
+   wake, and guessing would wake somebody else.
+4. Otherwise identify the caller by what it is: read the agent kind off our own
+   process ancestry (`argv[0]` basenames up the ppid chain, matched against the
+   kinds Herdr reports), then narrow by working directory and `working` status.
+   The first filter that yields exactly one candidate wins.
+5. If several candidates survive, refuse and print them. Waking the wrong
+   agent puts a message in somebody else's conversation; failing loudly does
+   not.
+
+The ancestry check is what makes step 4 work in a shared repo. Four agents in
+one directory is ordinary; four agents of the *same kind*, all `working`, in
+one directory is not.
 
 ## Delivery
 

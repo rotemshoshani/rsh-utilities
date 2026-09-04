@@ -47,6 +47,18 @@ def foreground_pids(pane_id):
     return [p["pid"] for p in info.get("foreground_processes", [])]
 
 
+def agent_list():
+    """Every live agent Herdr knows about, with pane, cwd, and status."""
+    return _run(["agent", "list"]).get("agents", [])
+
+
+def pane_ids(workspace_id=None):
+    args = ["pane", "list"]
+    if workspace_id:
+        args += ["--workspace", workspace_id]
+    return [p["pane_id"] for p in _run(args).get("panes", [])]
+
+
 def foreground_group_id(pane_id):
     """Leader pid of the pane's foreground group: the agent process itself."""
     result = _run(["pane", "process-info", "--pane", pane_id])

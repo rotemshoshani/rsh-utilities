@@ -26,9 +26,29 @@ Durations accept `90`, `90s`, `10m`, `2h`, `1h30m`, and `slp`-style `MM:SS` /
 `HH:MM:SS`. Defaults are `--every 30s` and `--deadline 30m`, with a 24h ceiling
 on any wait.
 
-Must run inside a Herdr-managed pane. It reads `$HERDR_PANE_ID` itself, so the
-agent never passes a pane ID. Outside Herdr it exits 3 rather than falling back
-to a blocking sleep — a fallback that pins the turn defeats the whole point.
+Must run inside a Herdr-managed pane. It works out which pane to wake on its
+own, so the agent never passes a pane ID. Outside Herdr it exits 3 rather than
+falling back to a blocking sleep — a fallback that pins the turn defeats the
+whole point.
+
+### Which pane gets woken
+
+`$HERDR_PANE_ID` is used when a live agent occupies that pane. It often is not.
+
+Codex runs shell commands through a long-lived app-server process instead of a
+child of the pane, so the variable it exposes belongs to whichever pane first
+started that process — frequently one that has since been closed. When that
+happens, `herdr-delay` identifies the caller by reading the agent kind off its
+own process ancestry, then narrowing by working directory and `working` status,
+and prints which rung it used:
+
+```
+[herdr-delay] resolved pane wN:pP by kind+cwd+working (HERDR_PANE_ID was wN:pB).
+```
+
+If that is still ambiguous it refuses and lists the candidates, because waking
+the wrong agent drops a message into somebody else's conversation. Pass
+`--pane <id>` to settle it.
 
 ### Two check modes
 
