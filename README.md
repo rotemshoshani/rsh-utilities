@@ -26,6 +26,9 @@ Source of truth for custom Claude Code slash commands (`/0-done`, `/0-sync`, `/0
 ### [herdr-codex-auto](herdr-codex-auto/)
 Event-driven Herdr watcher that presses `p` for Codex command-permission prompts while leaving ordinary questions untouched. It only watches existing Codex panes in the current workspace when explicitly launched. The older tmux implementation remains under `archive/codex-auto/`.
 
+### [herdr-delay](herdr-delay/)
+Lets a coding agent wait on CI, a preflight script, or a health check without burning a turn per poll. It returns immediately, keeps waiting in a detached process after the agent's turn ends, and prompts the agent once with the result.
+
 ### [herdr-space](herdr-space/)
 fzf picker over Herdr workspace presets. Each `*.json` beside the script defines a workspace label and its tabs; picking one opens the workspace and starts each tab's command, or focuses the workspace when it is already running.
 

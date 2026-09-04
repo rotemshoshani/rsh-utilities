@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Recording herdr stub. Real socket is never contacted.
+# HD_STUB_DIR   where calls and prompts are recorded
+# HD_STUB_PID   pid reported as the pane's foreground group leader
+# HD_STUB_STATUS agent status to report
+set -u
+dir="${HD_STUB_DIR:?}"
+printf '%s\n' "$*" >> "$dir/calls"
+# a pid file, when present, wins over HD_STUB_PID so a test can simulate the
+# agent being replaced between scheduling and delivery
+pid="${HD_STUB_PID:-999}"
+[ -f "$dir/pid" ] && pid=$(cat "$dir/pid")
+
+case "$1 $2" in
+  "pane process-info")
+    printf '{"result":{"process_info":{"pane_id":"p","shell_pid":1,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"agent"}]}}}\n' \
+      "$pid" "$pid"
+    ;;
+  "agent get")
+    printf '{"result":{"agent":{"agent_status":"%s"}}}\n' "${HD_STUB_STATUS:-idle}"
+    ;;
+  "agent prompt")
+    printf "%s\n" "$4" >> "$dir/prompts"
+    printf '{"result":{"type":"ok"}}\n'
+    ;;
+  "agent read")
+    printf '{"result":{"text":%s}}\n' "$(python3 -c 'import json,sys,os
+p=os.path.join(os.environ["HD_STUB_DIR"],"prompts")
+print(json.dumps(open(p).read() if os.path.exists(p) else ""))')"
+    ;;
+  "agent wait")
+    printf '{"result":{"type":"ok"}}\n'
+    ;;
+  "notification show")
+    printf '{"result":{"type":"ok"}}\n'
+    ;;
+  *)
+    printf '{"error":{"code":"not_implemented","message":"stub"}}\n'
+    exit 1
+    ;;
+esac
