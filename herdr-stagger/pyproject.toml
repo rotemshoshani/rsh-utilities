@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "herdr-stagger"
+version = "1.0.0"
+description = "Release a queue of plan-ready agents into their panes, one every N minutes."
+requires-python = ">=3.10"
+readme = "README.md"
+
+[project.scripts]
+herdr-stagger = "herdr_stagger.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

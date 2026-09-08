@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Recording herdr stub. The real socket is never contacted.
+
+HS_STUB_DIR holds the fixture and the recording:
+  agents.json          the `agent list` result payload
+  status/<pane>        current status for `agent get`; absent -> agent_not_found
+  prompt_error/<pane>  error code `agent prompt` should raise for that pane
+  no_notifications     when present, `notification show` errors
+  calls                every invocation, one line of argv per call
+  prompts              one `<pane>\t<text>` line per delivered prompt
+"""
+
+import json
+import os
+import re
+import sys
+
+DIR = os.environ["HS_STUB_DIR"]
+ARGV = sys.argv[1:]
+
+
+def record(name, line):
+    with open(os.path.join(DIR, name), "a") as handle:
+        handle.write(line + "\n")
+
+
+def fixture(kind, pane):
+    path = os.path.join(DIR, kind, re.sub(r"[^A-Za-z0-9_-]", "-", pane))
+    if not os.path.exists(path):
+        return None
+    with open(path) as handle:
+        return handle.read().strip()
+
+
+def emit(result):
+    print(json.dumps({"result": result}))
+    return 0
+
+
+def fail(code, message="stub"):
+    print(json.dumps({"error": {"code": code, "message": message}}))
+    return 1
+
+
+def main():
+    record("calls", " ".join(ARGV))
+    group, sub = (ARGV + ["", ""])[:2]
+
+    if (group, sub) == ("agent", "list"):
+        path = os.path.join(DIR, "agents.json")
+        agents = json.load(open(path)) if os.path.exists(path) else []
+        return emit({"agents": agents})
+
+    if (group, sub) == ("agent", "get"):
+        status = fixture("status", ARGV[2])
+        if status is None:
+            return fail("agent_not_found", "no agent in %s" % ARGV[2])
+        return emit({"agent": {"agent_status": status}})
+
+    if (group, sub) == ("agent", "prompt"):
+        pane, text = ARGV[2], ARGV[3]
+        code = fixture("prompt_error", pane)
+        if code:
+            return fail(code)
+        record("prompts", "%s\t%s" % (pane, text))
+        return emit({"type": "ok"})
+
+    if (group, sub) == ("notification", "show"):
+        if os.path.exists(os.path.join(DIR, "no_notifications")):
+            return fail("notification_failed")
+        return emit({"type": "ok"})
+
+    return fail("not_implemented", " ".join(ARGV))
+
+
+sys.exit(main())

@@ -29,6 +29,9 @@ Event-driven Herdr watcher that presses `p` for Codex command-permission prompts
 ### [herdr-delay](herdr-delay/)
 Lets a coding agent wait on CI, a preflight script, or a health check without burning a turn per poll. It returns immediately, keeps waiting in a detached process after the agent's turn ends, and prompts the agent once with the result.
 
+### [herdr-stagger](herdr-stagger/)
+Releases a queue of plan-ready agents into their panes, one every N minutes. Pick the Herdr panes in fire order, set the delay before the first send and the gaps between the rest, and walk away; a pane that is blocked or still working at its turn is held for, and everything after it shifts by the same amount.
+
 ### [herdr-space](herdr-space/)
 fzf picker over Herdr workspace presets. Each `*.json` beside the script defines a workspace label and its tabs; picking one opens the workspace and starts each tab's command, or focuses the workspace when it is already running.
 

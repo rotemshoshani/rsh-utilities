@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+script_path=$(readlink -f -- "${BASH_SOURCE[0]}")
+script_dir=$(cd -- "$(dirname -- "$script_path")" && pwd)
+export PYTHONPATH="$script_dir/src${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m herdr_stagger "$@"
