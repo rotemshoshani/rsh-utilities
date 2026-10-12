@@ -63,12 +63,17 @@ for name, content in files.items():
     path.write_text(content)
 for label, action in [('Server Mode', 'server'), ('Laptop Mode', 'laptop')]:
     path = visible / f'{label}.sh'
-    path.write_text(f'#!/bin/sh\nexec /usr/bin/python3 "{source}/modes.py" {action}\n')
+    command = f'/usr/bin/python3 "{source}/modes.py" {action}'
+    if action == 'server':
+        command += f' || exit $?\nif [ -t 0 ] && [ -t 1 ]; then\n  exec /usr/bin/python3 "{source}/dashboard.py" --tmux\nfi'
+    path.write_text(f'#!/bin/sh\n{command}\n')
     path.chmod(0o755)
+dashboard = visible / 'Live Status.sh'
+dashboard.write_text(f'#!/bin/sh\nexec /usr/bin/python3 "{source}/dashboard.py" --tmux "$@"\n')
+dashboard.chmod(0o755)
 shutil.copyfile(source / 'README.md', visible / 'README.md')
 installed = state / 'installed-package-lock.json'
 if not installed.exists():
     shutil.copyfile(home / 'projects/meniv/crm/package-lock.json', installed)
 subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True)
-print('Installed inactive units and ~/ThinkPad Modes/{Server Mode,Laptop Mode}.sh')
-print('No services started or timers enabled. Schedules remain held until explicit migration approval.')
+print('Updated definitions and mode/dashboard launchers; existing service and schedule state preserved.')
