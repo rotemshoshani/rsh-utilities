@@ -18,6 +18,10 @@ class ModesTests(unittest.TestCase):
         patcher = patch.object(m, 'STATE', Path(self.temp.name))
         patcher.start()
         self.addCleanup(patcher.stop)
+        for name, value in [('power_ready', False), ('authenticate_admin', None)]:
+            helper = patch.object(m, name, return_value=value)
+            helper.start()
+            self.addCleanup(helper.stop)
 
     def test_busy_mode_does_not_stop_job_or_change_power(self):
         with m.lock(), patch.object(m, 'ctl') as ctl, patch.object(m, 'run') as run:
@@ -39,8 +43,8 @@ class ModesTests(unittest.TestCase):
             calls = [c.args for c in ctl.call_args_list]
             self.assertLess(calls.index(('stop', *m.TIMERS)), calls.index(('stop', m.TARGET)))
             self.assertFalse((m.STATE / 'server-enabled').exists())
-            run.assert_any_call(['sudo', 'systemctl', 'unmask', *m.SLEEP_TARGETS])
-            run.assert_any_call(['sudo', 'loginctl', 'disable-linger', 'rshoshani'])
+            run.assert_any_call(['sudo', '-n', 'systemctl', 'unmask', *m.SLEEP_TARGETS])
+            run.assert_any_call(['sudo', '-n', 'loginctl', 'disable-linger', 'rshoshani'])
 
     def test_laptop_repeated_is_safe(self):
         with patch.object(m, 'ctl', return_value='inactive'), patch.object(m, 'run'):
@@ -59,6 +63,12 @@ class ModesTests(unittest.TestCase):
         with patch.object(m, 'ctl', return_value='activating'), patch.object(m, 'run') as run:
             with self.assertRaisesRegex(RuntimeError, 'busy'):
                 m.mode('laptop')
+            run.assert_not_called()
+
+    def test_matching_power_settings_need_no_sudo(self):
+        with patch.object(m, 'power_ready', return_value=True), patch.object(m, 'ctl', return_value='inactive'), patch.object(m, 'run') as run:
+            m.mode('server')
+            m.authenticate_admin.assert_not_called()
             run.assert_not_called()
 
     def test_window_boundaries_and_timezone(self):

@@ -1,6 +1,7 @@
 # ThinkPad modes
 
-Run these as your normal user in a terminal. Each asks for sudo authentication.
+Run these as your normal user in a terminal. Sudo authentication is requested
+only when system power settings need changing; repeated runs need no sudo.
 
 ```sh
 ~/"ThinkPad Modes/Server Mode.sh"

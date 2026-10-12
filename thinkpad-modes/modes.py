@@ -31,6 +31,29 @@ def ctl(*args):
     return run(['systemctl', '--user', *args], capture=True)
 
 
+def power_ready(name):
+    linger = run(['loginctl', 'show-user', 'rshoshani', '-p', 'Linger', '--value'], capture=True).strip()
+    result = subprocess.run(['systemctl', 'is-enabled', *SLEEP_TARGETS],
+                            capture_output=True, text=True)
+    states = result.stdout.splitlines()
+    if len(states) != len(SLEEP_TARGETS):
+        return False
+    if name == 'server':
+        return linger == 'yes' and all(s == 'masked' for s in states)
+    return linger == 'no' and all(s not in ('masked', 'masked-runtime') for s in states)
+
+
+def authenticate_admin():
+    if subprocess.run(['sudo', '-n', 'true'], stdout=subprocess.DEVNULL,
+                      stderr=subprocess.DEVNULL).returncode == 0:
+        return
+    if not sys.stdin.isatty():
+        raise RuntimeError('Power settings need sudo authentication. Run this script in a ThinkPad terminal.')
+    # Let sudo display its password prompt; never capture or handle the password.
+    if subprocess.run(['sudo', '-v']).returncode:
+        raise RuntimeError('Administrator authentication failed; no mode changes made.')
+
+
 def lock(wait=False):
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     handle = (STATE / 'operation.lock').open('a')
@@ -50,10 +73,13 @@ def mode(name):
             active = ctl('show', unit, '--property=ActiveState', '--value').strip()
             if active in ('active', 'activating', 'deactivating'):
                 raise RuntimeError(f'{unit} is busy; no changes made.')
-        run(['sudo', '-v'])
+        change_power = not power_ready(name)
+        if change_power:
+            authenticate_admin()
         if name == 'server':
-            run(['sudo', 'loginctl', 'enable-linger', 'rshoshani'])
-            run(['sudo', 'systemctl', 'mask', *SLEEP_TARGETS])
+            if change_power:
+                run(['sudo', '-n', 'loginctl', 'enable-linger', 'rshoshani'])
+                run(['sudo', '-n', 'systemctl', 'mask', *SLEEP_TARGETS])
             (STATE / 'server-enabled').touch(mode=0o600)
             ctl('enable', TARGET)
             try:
@@ -73,8 +99,9 @@ def mode(name):
             (STATE / 'server-enabled').unlink(missing_ok=True)
             ctl('stop', TARGET)
             ctl('disable', TARGET)
-            run(['sudo', 'systemctl', 'unmask', *SLEEP_TARGETS])
-            run(['sudo', 'loginctl', 'disable-linger', 'rshoshani'])
+            if change_power:
+                run(['sudo', '-n', 'systemctl', 'unmask', *SLEEP_TARGETS])
+                run(['sudo', '-n', 'loginctl', 'disable-linger', 'rshoshani'])
             print('Laptop mode: setup services stopped; normal sleep and original logout behavior restored.')
 
 
