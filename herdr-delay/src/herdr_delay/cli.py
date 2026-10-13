@@ -257,7 +257,9 @@ def spawn_waiter(state):
     return proc.pid
 
 
-def main(argv, out=None, hd=herdr_cli):
+def main(argv=None, out=None, hd=herdr_cli):
+    if argv is None:
+        argv = sys.argv[1:]
     out = out or sys.stdout
 
     if argv and argv[0] == "__waiter":

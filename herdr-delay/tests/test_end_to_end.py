@@ -116,7 +116,7 @@ class EndToEndTest(unittest.TestCase):
         self.wait_for_prompt()
         calls = self.read_calls().splitlines()
         waits = [i for i, c in enumerate(calls) if c.startswith("agent wait")]
-        prompts = [i for i, c in enumerate(calls) if c.startswith("agent prompt")]
+        prompts = [i for i, c in enumerate(calls) if c.startswith("pane run")]
         self.assertTrue(waits, "a blocked agent must be waited on")
         self.assertTrue(prompts)
         self.assertLess(waits[0], prompts[0])
@@ -128,7 +128,9 @@ class EndToEndTest(unittest.TestCase):
             handle.write("1")
         time.sleep(6)
         calls = self.read_calls()
-        self.assertNotIn("agent prompt", calls)
+        self.assertNotIn("agent send", calls)
+        self.assertNotIn("pane run", calls)
+        self.assertNotIn("pane send-keys", calls)
         self.assertIn("notification show", calls)
 
 

@@ -24,11 +24,14 @@ case "$1 $2" in
     printf '{"result":{"panes":[{"pane_id":"%s"}]}}\n' "${HERDR_PANE_ID:-wT:p9}"
     ;;
   "agent get")
-    printf '{"result":{"agent":{"agent_status":"%s"}}}\n' "${HD_STUB_STATUS:-idle}"
+    status="${HD_STUB_STATUS:-idle}"
+    [ -f "$dir/unblocked" ] && status=idle
+    [ -f "$dir/prompts" ] && status=working
+    printf '{"result":{"agent":{"agent_status":"%s"}}}\n' "$status"
     ;;
-  "agent prompt")
+  "pane run")
     printf "%s\n" "$4" >> "$dir/prompts"
-    printf '{"result":{"type":"ok"}}\n'
+    # Current Herdr's successful pane run is silent.
     ;;
   "agent read")
     printf '{"result":{"text":%s}}\n' "$(python3 -c 'import json,sys,os
@@ -36,6 +39,8 @@ p=os.path.join(os.environ["HD_STUB_DIR"],"prompts")
 print(json.dumps(open(p).read() if os.path.exists(p) else ""))')"
     ;;
   "agent wait")
+    [ "$4" = --status ] && [ "$5" = idle ] || exit 1
+    touch "$dir/unblocked"
     printf '{"result":{"type":"ok"}}\n'
     ;;
   "notification show")

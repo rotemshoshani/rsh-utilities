@@ -14,6 +14,13 @@ answer.
 
 ## Usage
 
+Run `./herdr-delay/herdr-delay` from the repository, or add a symlink to a
+directory on `PATH`, for example:
+
+```bash
+ln -s /path/to/rsh-utilities/herdr-delay/herdr-delay ~/.local/bin/herdr-delay
+```
+
 ```bash
 herdr-delay 10m 'check the preflight run'          # plain delay
 herdr-delay --in 10m --then 'npm run preflight'    # sleep, run once, report
@@ -114,14 +121,23 @@ repeatedly, detached, outside the agent's approval loop. The invocation itself
 is approved once with the command visible in argv, so nothing is hidden — but
 `--until 'deploy.sh'` would deploy once a minute.
 
-Delivery never falls back to the raw pane surface. `herdr pane run` appends
-Enter, so a fallback would turn an undeliverable wake message into a shell
-command executed in your pane. Undeliverable is an acceptable outcome;
-executing the wake text is not.
+Delivery waits for the agent to become idle, checks its foreground process
+and status, then uses `herdr pane run`. That command frames the text as a
+bracketed paste when supported and appends Enter in the same API request.
+`agent send` writes raw text and is unsuitable for this multiline submission.
+The guarded submission never runs when the scheduled agent is missing or
+replaced. Herdr does not offer an atomic conditional submit, so there is still
+a small race between the final identity check and submission.
+
+The waiter checks whether the same agent starts working after submission.
+This is a status-based acknowledgement, not proof that it read the callback.
+Text visible in the composer is not evidence of submission. An unconfirmed submission
+raises a notification; it is not pasted again, to avoid duplicate callbacks.
 
 A wake is not delivered to a `blocked` agent. Prompting one does not steer it —
 the Enter answers the overlay's highlighted default and the wake text is
-discarded. The waiter holds until the prompt clears.
+discarded. The waiter uses `agent wait --status idle` before trying delivery;
+Herdr treats `done` as a UI attention state, not a CLI wait target.
 
 ## For AGENTS.md / CLAUDE.md
 

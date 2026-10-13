@@ -2,6 +2,7 @@ import io
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from herdr_delay import cli
 
@@ -88,6 +89,13 @@ class EnvironmentGateTest(unittest.TestCase):
         os.environ.pop("HERDR_ENV", None)
         self.assertEqual(cli.main(["10m"], out=io.StringIO(), hd=FakeHerdr()), cli.EXIT_ENV)
 
+    def test_installed_entry_point_reads_sys_argv(self):
+        os.environ["HERDR_ENV"] = "1"
+        with patch.object(cli.sys, "argv", ["herdr-delay", "--help"]):
+            with self.assertRaises(SystemExit) as raised:
+                cli.main(out=io.StringIO(), hd=FakeHerdr())
+        self.assertEqual(raised.exception.code, 0)
+
     def test_a_missing_pane_id_is_resolved_rather_than_fatal(self):
         os.environ["HERDR_ENV"] = "1"
         os.environ.pop("HERDR_PANE_ID", None)
@@ -119,7 +127,8 @@ class ResolvePaneTest(unittest.TestCase):
             {"pane_id": "wT:p8", "agent": "codex", "agent_status": "idle",
              "cwd": "/somewhere/else", "foreground_cwd": "/somewhere/else"},
         ])
-        pane, how = cli.resolve_pane(hd)
+        with patch.object(cli, "caller_agent_kind", return_value=None):
+            pane, how = cli.resolve_pane(hd)
         self.assertEqual((pane, how), ("wT:p7", "cwd+working"))
 
     def test_agent_kind_from_ancestry_breaks_a_cwd_tie(self):

@@ -14,7 +14,6 @@ from . import herdr as herdr_cli
 from . import state as state_mod
 from .message import ERROR, FAILED, RESOLVED, TIMED_OUT, wake_message
 
-VERIFY_ATTEMPTS = 2
 VERIFY_WINDOW_SECONDS = 6.0
 VERIFY_POLL_SECONDS = 0.75
 
@@ -137,15 +136,13 @@ def _still_ours(state, hd):
         return False
 
 
-def _verify(state, hd, status_before, sleeper=time.sleep, clock=time.monotonic):
-    """`agent prompt` returns success even when the text is dropped."""
-    marker = "herdr-delay:%s" % state["marker"]
+def _verify(state, hd, sleeper=time.sleep, clock=time.monotonic):
+    """Composer text is not delivery; require the idle agent to start working."""
     deadline = clock() + VERIFY_WINDOW_SECONDS
     while clock() < deadline:
-        for source in ("detection", "visible"):
-            if marker in hd.agent_read(state["pane_id"], source=source):
-                return True
-        if status_before != "working" and hd.agent_status(state["pane_id"]) == "working":
+        if not _still_ours(state, hd):
+            return False
+        if hd.agent_status(state["pane_id"]) == "working":
             return True
         sleeper(VERIFY_POLL_SECONDS)
     return False
@@ -167,10 +164,10 @@ def deliver(state, result, hd=herdr_cli, sleeper=time.sleep, clock=time.monotoni
         hd.notification_show("herdr-delay: wake undelivered", "no agent in %s" % pane)
         return False
 
-    if status == "blocked":
+    if status in ("blocked", "working"):
         # Prompting a blocked agent does not steer it. The Enter answers the
         # overlay's highlighted default and the wake text is discarded.
-        log("agent is blocked; holding until it clears")
+        log("agent is busy or blocked; holding until idle")
         try:
             hd.agent_wait_unblocked(pane)
         except hd.HerdrError as exc:
@@ -181,19 +178,21 @@ def deliver(state, result, hd=herdr_cli, sleeper=time.sleep, clock=time.monotoni
             return False
         status = hd.agent_status(pane)
 
-    for attempt in range(1, VERIFY_ATTEMPTS + 1):
-        try:
-            hd.agent_prompt(pane, text)
-        except hd.HerdrError as exc:
-            log("prompt attempt %d failed: %s" % (attempt, exc.code))
-            if exc.code in ("agent_not_found", "invalid_target", "pane_not_found"):
-                break
-            sleeper(1.0)
-            continue
-        if _verify(state, hd, status, sleeper=sleeper, clock=clock):
-            log("delivered on attempt %d" % attempt)
+    if not _still_ours(state, hd) or status not in ("idle", "done"):
+        log("undelivered: agent changed or is no longer ready")
+        return False
+    try:
+        hd.agent_prompt(pane, text, expected_pid=state["agent_pid"])
+    except hd.HerdrError as exc:
+        log("submission failed: %s" % exc.code)
+    else:
+        if _verify(state, hd, sleeper=sleeper, clock=clock):
+            log("delivered: agent started working")
             return True
-        log("attempt %d returned success but the text did not land" % attempt)
+        log("submission unconfirmed: agent did not start working")
+
+    # Do not paste again or blindly send a second Enter: the first submission
+    # may have landed, or the user may have started editing the composer.
 
     hd.notification_show(
         "herdr-delay: wake undelivered",

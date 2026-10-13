@@ -18,7 +18,7 @@ class HerdrError(Exception):
         self.message = message
 
 
-def _run(args, timeout=None):
+def _run(args, timeout=None, allow_empty=False):
     proc = subprocess.run(
         [BINARY] + args,
         capture_output=True,
@@ -37,7 +37,13 @@ def _run(args, timeout=None):
         raise HerdrError(err.get("code", "unknown"), err.get("message", ""))
     if proc.returncode != 0:
         raise HerdrError("cli_failed", blob or "herdr exited %d" % proc.returncode)
-    return (payload or {}).get("result", {})
+    # pane run succeeds silently in Herdr 0.7.4. Reads and agent send
+    # still require JSON, so usage/help output cannot masquerade as success.
+    if allow_empty and not blob:
+        return {}
+    if not isinstance(payload, dict) or "result" not in payload:
+        raise HerdrError("invalid_response", "herdr did not return a JSON result")
+    return payload["result"]
 
 
 def foreground_pids(pane_id):
@@ -77,24 +83,25 @@ def agent_status(pane_id):
 
 
 def agent_wait_unblocked(pane_id, timeout_ms=None):
-    """Block until the agent leaves `blocked`.
-
-    Waiting on idle alone is wrong: an agent whose tab has not been seen in the
-    focused UI settles into `done`, not `idle`, which is exactly the case this
-    tool exists for.
-    """
-    args = [
-        "agent", "wait", pane_id,
-        "--until", "idle", "--until", "done", "--until", "working",
-    ]
+    """Wait for CLI completion; Herdr maps the UI's `done` state to idle."""
+    args = ["agent", "wait", pane_id, "--status", "idle"]
     if timeout_ms:
         args += ["--timeout", str(timeout_ms)]
     return _run(args)
 
 
-def agent_prompt(pane_id, text):
-    """Submit text plus Enter. Never call this on a blocked agent."""
-    return _run(["agent", "prompt", pane_id, text])
+def agent_prompt(pane_id, text, expected_pid):
+    """Use Herdr's paste-aware submission only for the scheduled idle agent.
+
+    `agent send` writes raw bytes. `pane run` frames a bracketed paste when
+    supported and appends the correctly encoded Enter in the same API request.
+    This is the primary submission path, never a fallback to a missing agent.
+    """
+    if expected_pid not in foreground_pids(pane_id):
+        raise HerdrError("agent_replaced", "the scheduled agent is no longer foreground")
+    if agent_status(pane_id) not in ("idle", "done"):
+        raise HerdrError("agent_not_ready", "the agent cannot safely accept a wake")
+    return _run(["pane", "run", pane_id, text], allow_empty=True)
 
 
 def agent_read(pane_id, source="detection", lines=200):

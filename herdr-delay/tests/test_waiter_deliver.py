@@ -41,13 +41,17 @@ class FakeHerdr:
 
     def agent_wait_unblocked(self, pane_id, timeout_ms=None):
         self.calls.append("agent_wait_unblocked")
+        if self.statuses == ["working"]:
+            self.statuses = ["idle"]
         return {}
 
-    def agent_prompt(self, pane_id, text):
+    def agent_prompt(self, pane_id, text, expected_pid):
+        assert expected_pid == STATE["agent_pid"]
         self.calls.append("agent_prompt")
         self.prompts.append(text)
         if self.lands:
             self._screen += text
+            self.statuses = ["working"]
         return {}
 
     def agent_read(self, pane_id, source="detection", lines=200):
@@ -89,10 +93,10 @@ class HappyPathTest(unittest.TestCase):
         self.assertEqual(len(hd.prompts), 1)
         self.assertIn("[herdr-delay:a3f9]", hd.prompts[0])
 
-    def test_working_agent_is_steered_without_waiting(self):
+    def test_working_agent_is_waited_on_before_submission(self):
         hd = FakeHerdr(statuses=["working"])
         self.assertTrue(deliver(hd))
-        self.assertNotIn("agent_wait_unblocked", hd.calls)
+        self.assertIn("agent_wait_unblocked", hd.calls)
 
 
 class BlockedAgentTest(unittest.TestCase):
@@ -121,6 +125,23 @@ class BlockedAgentTest(unittest.TestCase):
 
 
 class IdentityTest(unittest.TestCase):
+    def test_agent_disappearing_after_wait_is_not_prompted(self):
+        hd = FakeHerdr(statuses=["blocked", None])
+        self.assertFalse(deliver(hd))
+        self.assertEqual(hd.prompts, [])
+
+    def test_verification_rechecks_identity(self):
+        hd = FakeHerdr(lands=False)
+        original = hd.agent_prompt
+
+        def replace(pane_id, text, expected_pid):
+            original(pane_id, text, expected_pid)
+            hd.pids = [9999]
+
+        hd.agent_prompt = replace
+        self.assertFalse(deliver(hd))
+        self.assertEqual(len(hd.prompts), 1)
+
     def test_different_pid_means_a_different_conversation(self):
         hd = FakeHerdr(pids=[9999])
         self.assertFalse(deliver(hd))
@@ -134,16 +155,22 @@ class IdentityTest(unittest.TestCase):
 
 
 class VerificationTest(unittest.TestCase):
-    def test_a_dropped_prompt_is_retried(self):
+    def test_unconfirmed_submission_does_not_duplicate_the_prompt(self):
         hd = FakeHerdr(lands=False)
         self.assertFalse(deliver(hd))
-        self.assertEqual(len(hd.prompts), 2, "success responses are not delivery")
+        self.assertEqual(len(hd.prompts), 1, "do not duplicate an uncertain submission")
+        self.assertEqual(len(hd.notifications), 1)
+
+    def test_marker_in_composer_does_not_count_as_delivery(self):
+        hd = FakeHerdr(lands=False)
+        hd._screen = "[herdr-delay:a3f9] Your scheduled wait finished."
+        self.assertFalse(deliver(hd))
         self.assertEqual(len(hd.notifications), 1)
 
     def test_gone_agent_stops_retrying_immediately(self):
         hd = FakeHerdr()
 
-        def boom(pane_id, text):
+        def boom(pane_id, text, expected_pid):
             hd.calls.append("agent_prompt")
             raise HerdrError("agent_not_found")
 
