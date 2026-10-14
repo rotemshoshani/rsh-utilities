@@ -18,7 +18,7 @@ class HerdrError(Exception):
         self.message = message
 
 
-def _run(args, timeout=None, allow_empty=False):
+def _run(args, timeout=None, allow_empty=False, idle_event_pane=None):
     proc = subprocess.run(
         [BINARY] + args,
         capture_output=True,
@@ -41,6 +41,17 @@ def _run(args, timeout=None, allow_empty=False):
     # still require JSON, so usage/help output cannot masquerade as success.
     if allow_empty and not blob:
         return {}
+    # agent wait returns an agent result when already idle, but an event
+    # envelope when it had to wait for the transition (Herdr 0.7.4).
+    if idle_event_pane is not None and isinstance(payload, dict):
+        data = payload.get("data")
+        if (
+            payload.get("event") in ("pane.agent_status_changed", "pane_agent_status_changed")
+            and isinstance(data, dict)
+            and data.get("pane_id") == idle_event_pane
+            and data.get("agent_status") in ("idle", "done")
+        ):
+            return data
     if not isinstance(payload, dict) or "result" not in payload:
         raise HerdrError("invalid_response", "herdr did not return a JSON result")
     return payload["result"]
@@ -87,7 +98,7 @@ def agent_wait_unblocked(pane_id, timeout_ms=None):
     args = ["agent", "wait", pane_id, "--status", "idle"]
     if timeout_ms:
         args += ["--timeout", str(timeout_ms)]
-    return _run(args)
+    return _run(args, idle_event_pane=pane_id)
 
 
 def agent_prompt(pane_id, text, expected_pid):

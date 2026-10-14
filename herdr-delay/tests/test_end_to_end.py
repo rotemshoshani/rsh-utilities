@@ -121,6 +121,16 @@ class EndToEndTest(unittest.TestCase):
         self.assertTrue(prompts)
         self.assertLess(waits[0], prompts[0])
 
+    def test_working_agent_idle_transition_still_delivers(self):
+        self.env["HD_STUB_STATUS"] = "working"
+        self.run_tool("--in", "1s", "--reason", "busy agent completion")
+        prompt = self.wait_for_prompt()
+        self.assertIn("busy agent completion", prompt)
+        self.assertIn("RESOLVED", prompt)
+        calls = self.read_calls()
+        self.assertIn("agent wait", calls)
+        self.assertIn("pane run", calls)
+
     def test_agent_replaced_after_scheduling_is_never_written_to(self):
         """Same pane, different process: a wake here lands in the wrong session."""
         self.run_tool("--in", "3s")

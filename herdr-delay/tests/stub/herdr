@@ -41,7 +41,8 @@ print(json.dumps(open(p).read() if os.path.exists(p) else ""))')"
   "agent wait")
     [ "$4" = --status ] && [ "$5" = idle ] || exit 1
     touch "$dir/unblocked"
-    printf '{"result":{"type":"ok"}}\n'
+    printf '{"event":"pane.agent_status_changed","data":{"pane_id":"%s","agent_status":"idle"}}\n' \
+      "${HERDR_PANE_ID:-wT:p9}"
     ;;
   "notification show")
     printf '{"result":{"type":"ok"}}\n'

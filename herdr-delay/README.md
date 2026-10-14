@@ -138,6 +138,8 @@ A wake is not delivered to a `blocked` agent. Prompting one does not steer it â€
 the Enter answers the overlay's highlighted default and the wake text is
 discarded. The waiter uses `agent wait --status idle` before trying delivery;
 Herdr treats `done` as a UI attention state, not a CLI wait target.
+The waiter accepts both the immediate agent result and the status-change event
+returned when Herdr actually waits for an idle transition.
 
 ## For AGENTS.md / CLAUDE.md
 

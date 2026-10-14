@@ -1,5 +1,6 @@
 """Contract tests for the installed Herdr CLI, including submission guards."""
 
+import json
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -33,7 +34,41 @@ class HerdrContractTest(unittest.TestCase):
     def test_current_wait_syntax(self):
         with patch.object(herdr, "_run", return_value={}) as run:
             herdr.agent_wait_unblocked("p", timeout_ms=100)
-        run.assert_called_once_with(["agent", "wait", "p", "--status", "idle", "--timeout", "100"])
+        run.assert_called_once_with(["agent", "wait", "p", "--status", "idle", "--timeout", "100"],
+                                    idle_event_pane="p")
+
+    def test_wait_accepts_both_immediate_result_and_idle_transition(self):
+        responses = [
+            {"id": "cli:agent:wait", "result": {"type": "agent_info", "agent": {"agent_status": "idle"}}},
+            {"event": "pane.agent_status_changed", "data": {"pane_id": "p", "agent_status": "idle"}},
+        ]
+        for payload in responses:
+            with self.subTest(payload=payload), patch.object(herdr.subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], 0, json.dumps(payload), "")):
+                result = herdr.agent_wait_unblocked("p")
+                self.assertEqual(result, payload.get("result", payload.get("data")))
+
+    def test_wait_rejects_unrelated_or_invalid_event_envelopes(self):
+        responses = [
+            {"event": "pane.agent_status_changed", "data": {"pane_id": "other", "agent_status": "idle"}},
+            {"event": "pane.agent_status_changed", "data": {"pane_id": "p", "agent_status": "blocked"}},
+            {"event": "pane.agent_status_changed", "data": {"pane_id": "p", "agent_status": "working"}},
+            {"event": "pane.updated", "data": {"pane_id": "p", "agent_status": "idle"}},
+            {"event": "pane.agent_status_changed", "data": None},
+        ]
+        for payload in responses:
+            with self.subTest(payload=payload), patch.object(herdr.subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], 0, json.dumps(payload), "")):
+                with self.assertRaises(herdr.HerdrError) as raised:
+                    herdr.agent_wait_unblocked("p")
+                self.assertEqual(raised.exception.code, "invalid_response")
+
+    def test_status_reads_still_reject_event_responses(self):
+        payload = {"event": "pane.agent_status_changed", "data": {"pane_id": "p", "agent_status": "idle"}}
+        with patch.object(herdr.subprocess, "run", return_value=
+                subprocess.CompletedProcess([], 0, json.dumps(payload), "")):
+            with self.assertRaises(herdr.HerdrError):
+                herdr.agent_status("p")
 
     def test_native_paste_submission_is_guarded(self):
         with patch.object(herdr, "_run", return_value={}) as run, \
