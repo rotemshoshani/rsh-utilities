@@ -19,11 +19,52 @@ export interface VercelAlias {
   gitBranch?: string;
 }
 
-export type AliasConfig = LocalAlias | ConvexAlias | VercelAlias;
+export interface StructuredAlias {
+  provider: "structured";
+  path: string;
+  fields: Record<string, string>;
+}
+
+export interface SshAlias {
+  provider: "ssh";
+  host: string;
+  path: string;
+  format: "dotenv" | "systemd";
+}
+
+export interface SshStructuredAlias {
+  provider: "ssh-structured";
+  host: string;
+  path: string;
+  fields: Record<string, string>;
+}
+
+export interface WranglerAlias {
+  provider: "wrangler";
+}
+
+export interface SecretReference {
+  alias: string;
+  name: string;
+}
+
+export interface CloudflareAccessServiceTokenIssuer {
+  provider: "cloudflare-access-service-token";
+  accountId: SecretReference;
+  apiToken: SecretReference;
+  tokenName: string;
+  duration?: string;
+}
+
+export type IssuerConfig = CloudflareAccessServiceTokenIssuer;
+
+export type AliasConfig = LocalAlias | ConvexAlias | VercelAlias | StructuredAlias | SshAlias | SshStructuredAlias | WranglerAlias;
 
 export interface KeyperConfig {
   version: 1;
   aliases: Record<string, AliasConfig>;
+  issuers?: Record<string, IssuerConfig>;
+  checks?: Record<string, SecretReference[]>;
 }
 
 export interface InventoryEntry {
@@ -34,6 +75,7 @@ export interface InventoryEntry {
 export interface WriteOptions {
   overwrite: boolean;
   sensitive: boolean;
+  valueType?: "string" | "boolean" | "json";
 }
 
 export interface KeyProvider {

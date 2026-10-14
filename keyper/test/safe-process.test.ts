@@ -16,4 +16,18 @@ describe("runSafeProcess", () => {
     expect(Buffer.from(message).includes(canary)).toBe(false);
     canary.fill(0);
   });
+
+  it("kills timed-out providers without returning captured output", async () => {
+    const canary = randomBytes(64);
+    const script = "process.stdin.on('data',v=>{process.stdout.write(v);process.stderr.write(v)});setInterval(()=>{},1000)";
+    let message = "";
+    try {
+      await runSafeProcess(process.execPath, ["-e", script], { input: canary, timeoutMs: 200 });
+    } catch (error: unknown) {
+      message = error instanceof Error ? error.message : "";
+    }
+    expect(message).toBe("The provider operation failed. Provider output was suppressed.");
+    expect(Buffer.from(message).includes(canary)).toBe(false);
+    canary.fill(0);
+  });
 });

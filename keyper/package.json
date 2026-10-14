@@ -13,9 +13,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --exclude test/matrix.test.ts",
+    "test": "npm run build && vitest run --exclude test/matrix.test.ts",
     "test:matrix": "npm run build && KEYPER_MATRIX_TESTS=1 vitest run test/matrix.test.ts --testTimeout=120000",
-    "gate": "npm run check && npm test && npm run build"
+    "gate": "npm run check && npm test"
   },
   "engines": {
     "node": ">=22"

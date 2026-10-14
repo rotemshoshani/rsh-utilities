@@ -42,5 +42,26 @@ describe("installGuardrails", () => {
     } finally {
       policy.fill(0);
     }
+    for (const command of [
+      ["wrangler", "auth", "token", "--json"],
+      ["npx", "--yes", "wrangler@latest", "auth", "token", "--json"],
+      ["bunx", "wrangler", "auth", "token", "--json"],
+      ["pnpm", "exec", "wrangler", "auth", "token", "--json"]
+    ]) {
+      const result = await runSafeProcess("codex", ["execpolicy", "check", "--rules", join(directory, ".codex", "rules", "keyper.rules"), "--", ...command]);
+      try {
+        expect(result.includes(Buffer.from('"forbidden"'))).toBe(true);
+      } finally {
+        result.fill(0);
+      }
+    }
+    for (const command of [["twilio", "profiles:list"], ["lk", "project", "list", "--json"]]) {
+      const result = await runSafeProcess("codex", ["execpolicy", "check", "--rules", join(directory, ".codex", "rules", "keyper.rules"), "--", ...command]);
+      try {
+        expect(result.includes(Buffer.from('"forbidden"'))).toBe(true);
+      } finally {
+        result.fill(0);
+      }
+    }
   });
 });

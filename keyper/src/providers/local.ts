@@ -130,18 +130,24 @@ export class LocalProvider implements KeyProvider {
   }
 
   async write(name: string, value: Buffer, options: WriteOptions): Promise<{ verifiable: boolean }> {
+    return await this.writeMany([[name, value]], options);
+  }
+
+  async writeMany(values: ReadonlyArray<readonly [string, Buffer]>, options: WriteOptions): Promise<{ verifiable: boolean }> {
     const state = await safeRead(this.path);
     const lines = state.content ? state.content.split(/\r?\n/) : [];
     const records = assignmentRanges(lines);
-    const existing = records.find((record) => record.name === name);
-    if (existing && !options.overwrite) throw new KeyperError("DESTINATION_EXISTS");
-    const serialized = `${name}=${serializeValue(value.toString("utf8"))}`;
-    if (existing) {
-      lines.splice(existing.start, existing.end - existing.start + 1, serialized);
-    } else {
-      if (lines.length > 0 && lines.at(-1) !== "") lines.push(serialized);
-      else if (lines.length === 0) lines.push(serialized);
-      else lines.splice(lines.length - 1, 0, serialized);
+    const replacements = new Map(values.map(([name, value]) => [name, `${name}=${serializeValue(value.toString("utf8"))}`]));
+    if (replacements.size !== values.length) throw new KeyperError("LOCAL_FILE_INVALID");
+    const existing = records.filter((record) => replacements.has(record.name));
+    if (existing.length > 0 && !options.overwrite) throw new KeyperError("DESTINATION_EXISTS");
+    for (const record of existing.sort((left, right) => right.start - left.start)) {
+      lines.splice(record.start, record.end - record.start + 1, replacements.get(record.name)!);
+      replacements.delete(record.name);
+    }
+    for (const serialized of replacements.values()) {
+      if (lines.length > 0 && lines.at(-1) === "") lines.splice(lines.length - 1, 0, serialized);
+      else lines.push(serialized);
     }
     const output = `${lines.join("\n").replace(/\n*$/, "")}\n`;
     await atomicWrite(this.path, output, state.exists ? state.mode : 0o600);

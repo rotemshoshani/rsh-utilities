@@ -15,5 +15,12 @@
       "scope": "team-slug",
       "environment": "preview"
     }
+  },
+  "checks": {
+    "api-key": [
+      "local-dev:API_KEY",
+      "convex-dev:API_KEY",
+      "vercel-preview:API_KEY"
+    ]
   }
 }

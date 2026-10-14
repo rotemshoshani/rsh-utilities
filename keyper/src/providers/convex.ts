@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
+import { requireName } from "../config.js";
 import { KeyperError } from "../errors.js";
 import { runSafeProcess } from "../safe-process.js";
 import type { InventoryEntry, KeyProvider, WriteOptions } from "../types.js";
@@ -31,12 +32,13 @@ export class ConvexProvider implements KeyProvider {
 
   constructor(
     private readonly deployment: string,
-    private readonly cwd?: string
+    private readonly cwd?: string,
+    private readonly processRunner: typeof runSafeProcess = runSafeProcess
   ) {}
 
   private async run(args: string[], input?: Buffer): Promise<Buffer> {
     const invocation = convexInvocation();
-    return await runSafeProcess(
+    return await this.processRunner(
       invocation.command,
       [...invocation.prefix, "env", "--deployment", this.deployment, ...args],
       { ...(this.cwd ? { cwd: this.cwd } : {}), ...(input ? { input } : {}) }
@@ -46,13 +48,18 @@ export class ConvexProvider implements KeyProvider {
   async list(): Promise<InventoryEntry[]> {
     const output = await this.run(["list", "--names-only"]);
     try {
-      return output
+      const names = output
         .toString("utf8")
         .split(/\r?\n/)
         .map((name) => name.trim())
-        .filter(Boolean)
-        .map((name) => ({ name, portability: "portable" as const }))
-        .sort((left, right) => left.name.localeCompare(right.name));
+        .filter(Boolean);
+      try {
+        return names
+          .map((name) => ({ name: requireName(name), portability: "portable" as const }))
+          .sort((left, right) => left.name.localeCompare(right.name));
+      } catch {
+        throw new KeyperError("PROVIDER_SCHEMA");
+      }
     } finally {
       output.fill(0);
     }
@@ -67,9 +74,20 @@ export class ConvexProvider implements KeyProvider {
   async write(name: string, value: Buffer, options: WriteOptions): Promise<{ verifiable: boolean }> {
     const exists = (await this.list()).some((entry) => entry.name === name);
     if (exists && !options.overwrite) throw new KeyperError("DESTINATION_EXISTS");
-    const output = await this.run(["set", name], value);
-    output.fill(0);
-    return { verifiable: true };
+
+    // Convex's non-interactive `env set NAME` reader removes one trailing LF
+    // from stdin. Supply a transport terminator so the secret bytes themselves
+    // survive unchanged, including values that already end in a newline.
+    const input = Buffer.allocUnsafe(value.length + 1);
+    value.copy(input);
+    input[input.length - 1] = 0x0a;
+    try {
+      const output = await this.run(["set", name], input);
+      output.fill(0);
+      return { verifiable: true };
+    } finally {
+      input.fill(0);
+    }
   }
 
   async remove(name: string): Promise<void> {
