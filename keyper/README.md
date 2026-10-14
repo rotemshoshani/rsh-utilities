@@ -8,6 +8,8 @@ Keyper can list names and portability status, but it has no command that display
 
 Requirements: Node.js 22+ and the authenticated provider CLIs used by your commands. Twilio wrappers require `twilio`; LiveKit wrappers require `lk`.
 
+Vercel writes require a CLI version with `vercel api --input` support. Keyper uses the CLI's current login and token refresh for reads and writes. Request values travel through stdin, with response output suppressed and captured buffers cleared. An explicit `VERCEL_TOKEN` override is passed through an owner-only temporary CLI configuration, never an argument.
+
 ```sh
 npm install
 npm run build

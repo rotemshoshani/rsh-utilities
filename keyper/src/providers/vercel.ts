@@ -1,6 +1,6 @@
-import { chmod, mkdtemp, readFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KeyperError } from "../errors.js";
 import { runSafeProcess } from "../safe-process.js";
@@ -19,6 +19,7 @@ interface VercelContext {
   directory: string;
   orgId: string;
   projectId: string;
+  authArgs: string[];
 }
 
 interface VercelInventoryEntry extends InventoryEntry {
@@ -34,7 +35,7 @@ function registerContextCleanup(directory: string): void {
       try {
         rmSync(path, { recursive: true, force: true });
       } catch {
-        // Context contains project metadata only and is safe to leave for OS temp cleanup.
+        // Best-effort cleanup; directories and credential files are owner-only.
       }
     }
   });
@@ -68,7 +69,10 @@ export class VercelProvider implements KeyProvider {
   private inventoryCache: VercelInventoryEntry[] | undefined;
   private contextPromise: Promise<VercelContext> | undefined;
 
-  constructor(private readonly config: VercelAlias) {}
+  constructor(
+    private readonly config: VercelAlias,
+    private readonly processRunner: typeof runSafeProcess = runSafeProcess
+  ) {}
 
   private async context(): Promise<VercelContext> {
     if (!this.contextPromise) {
@@ -76,7 +80,19 @@ export class VercelProvider implements KeyProvider {
         const directory = await mkdtemp(join(tmpdir(), "keyper-vercel-"));
         await chmod(directory, 0o700);
         try {
-          const output = await runSafeProcess("vercel", [
+          // Let the CLI manage its own login and OAuth refresh. An explicit
+          // token override stays in a private file, never a command argument.
+          const token = process.env.VERCEL_TOKEN;
+          const authArgs = token ? ["--global-config", directory] : [];
+          if (token) {
+            const bytes = Buffer.from(JSON.stringify({ token }), "utf8");
+            try {
+              await writeFile(join(directory, "auth.json"), bytes, { mode: 0o600, flag: "wx" });
+            } finally {
+              bytes.fill(0);
+            }
+          }
+          const output = await this.processRunner("vercel", [
             "link",
             "--yes",
             "--project",
@@ -85,6 +101,7 @@ export class VercelProvider implements KeyProvider {
             directory,
             "--non-interactive",
             "--no-color",
+            ...authArgs,
             ...(this.config.scope ? ["--scope", this.config.scope] : [])
           ]);
           output.fill(0);
@@ -95,7 +112,7 @@ export class VercelProvider implements KeyProvider {
               throw new KeyperError("PROVIDER_FAILED");
             }
             registerContextCleanup(directory);
-            return { directory, orgId: metadata.orgId, projectId: metadata.projectId };
+            return { directory, orgId: metadata.orgId, projectId: metadata.projectId, authArgs };
           } finally {
             metadataBytes.fill(0);
           }
@@ -110,32 +127,7 @@ export class VercelProvider implements KeyProvider {
 
   private async contextArgs(): Promise<string[]> {
     const context = await this.context();
-    return ["--cwd", context.directory, "--non-interactive", "--no-color"];
-  }
-
-  private async accessToken(): Promise<string> {
-    const environmentToken = process.env.VERCEL_TOKEN;
-    if (environmentToken) return environmentToken;
-    const dataRoot = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
-    const configRoot = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-    const candidates = [
-      join(dataRoot, "com.vercel.cli", "auth.json"),
-      join(configRoot, "vercel", "auth.json"),
-      join(homedir(), "Library", "Application Support", "com.vercel.cli", "auth.json")
-    ];
-    for (const path of candidates) {
-      let bytes: Buffer | undefined;
-      try {
-        bytes = await readFile(path);
-        const parsed = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
-        if (typeof parsed.token === "string" && parsed.token.length > 0) return parsed.token;
-      } catch {
-        // Try the next documented CLI credential location without exposing details.
-      } finally {
-        bytes?.fill(0);
-      }
-    }
-    throw new KeyperError("PROVIDER_AUTH");
+    return ["--cwd", context.directory, "--non-interactive", "--no-color", ...context.authArgs];
   }
 
   private async apiRequest(
@@ -144,31 +136,29 @@ export class VercelProvider implements KeyProvider {
     init: { method: "POST" | "PATCH" | "DELETE"; body?: Buffer }
   ): Promise<void> {
     const context = await this.context();
-    const token = await this.accessToken();
-    const url = new URL(`https://api.vercel.com/${apiVersion}/projects/${encodeURIComponent(context.projectId)}/env${suffix}`);
-    url.searchParams.set("teamId", context.orgId);
-    let response: Response;
-    const body = init.body ? Uint8Array.from(init.body).buffer : undefined;
-    try {
-      response = await fetch(url, {
-        method: init.method,
-        headers: {
-          authorization: `Bearer ${token}`,
-          ...(init.body ? { "content-type": "application/json" } : {})
-        },
-        ...(body ? { body } : {})
-      });
-    } catch {
-      throw new KeyperError("PROVIDER_FAILED");
-    } finally {
-      if (body) new Uint8Array(body).fill(0);
-    }
-    await response.body?.cancel().catch(() => undefined);
-    if (response.ok) return;
-    if (response.status === 401 || response.status === 403) throw new KeyperError("PROVIDER_AUTH");
-    if (response.status === 409) throw new KeyperError("DESTINATION_EXISTS");
-    if (response.status === 400 || response.status === 422) throw new KeyperError("CONFIG_INVALID");
-    throw new KeyperError("PROVIDER_FAILED");
+    const separator = suffix.includes("?") ? "&" : "?";
+    const endpoint = `/${apiVersion}/projects/${encodeURIComponent(context.projectId)}/env${suffix}${separator}teamId=${encodeURIComponent(context.orgId)}`;
+    const output = await this.processRunner("vercel", [
+      "api", endpoint, "--method", init.method, "--silent",
+      ...(init.body ? ["--input", "-"] : []),
+      ...await this.contextArgs()
+    ], {
+      ...(init.body ? { input: init.body } : {}),
+      classifyFailure: (stderr, stdout) => {
+        // Inspect captured errors internally; never forward provider messages.
+        const bytes = Buffer.concat([stderr, stdout]);
+        try {
+          const error = bytes.toString("utf8");
+          if (/\b(?:401|403)\b|unauthori[sz]ed|forbidden|authentication|not logged in|invalid token/i.test(error)) return "PROVIDER_AUTH";
+          if (/\b409\b|already exists/i.test(error)) return "DESTINATION_EXISTS";
+          if (/\b(?:400|422)\b|bad request|unprocessable/i.test(error)) return "CONFIG_INVALID";
+          return "PROVIDER_FAILED";
+        } finally {
+          bytes.fill(0);
+        }
+      }
+    });
+    output.fill(0);
   }
 
   private targetArgs(): string[] {
@@ -178,7 +168,7 @@ export class VercelProvider implements KeyProvider {
   async list(): Promise<InventoryEntry[]> {
     if (this.inventoryCache) return this.inventoryCache.map(({ name, portability }) => ({ name, portability }));
     const context = await this.contextArgs();
-    const output = await runSafeProcess("vercel", [
+    const output = await this.processRunner("vercel", [
       "env",
       "list",
       ...this.targetArgs(),
@@ -202,7 +192,7 @@ export class VercelProvider implements KeyProvider {
     if (!entry) throw new KeyperError("SOURCE_MISSING");
     if (entry.portability === "locked") throw new KeyperError("VALUE_LOCKED");
     const context = await this.contextArgs();
-    return await runSafeProcess("vercel", [
+    return await this.processRunner("vercel", [
       "env",
       "run",
       "-e",
@@ -267,7 +257,7 @@ export class VercelProvider implements KeyProvider {
     const entry = this.inventoryCache?.find((candidate) => candidate.name === name);
     if (!entry) throw new KeyperError("SOURCE_MISSING");
     const context = await this.contextArgs();
-    const output = await runSafeProcess("vercel", [
+    const output = await this.processRunner("vercel", [
       "env",
       "remove",
       name,
