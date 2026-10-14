@@ -5,13 +5,15 @@
   "num_runs": 3,
   "run_seconds": 1500,
   "reviewer_run_seconds": 1500,
+  "reviewer_artifact_min_bytes": 1000,
+  "max_incomplete_continuations": 4,
   "startup_wait_seconds": 10,
   "post_startup_wait_seconds": 3,
   "capture_lines": 500,
-  "ready_check_seconds": 60,
+  "ready_check_seconds": 5,
   "ready_check_lines": 1,
   "ready_markers": ["Ready"],
-  "ready_command_names": ["codex"],
+  "ready_command_names": ["codex", "pi"],
   "history_limit": 200000,
   "commands": [
     {
@@ -47,6 +49,29 @@
         {
           "label": "OpenAI GPT-5.4 mini",
           "model": "gpt-5.4-mini"
+        }
+      ]
+    },
+    {
+      "name": "pi",
+      "command": "pi --approve --provider openrouter",
+      "prompt_delivery": "at_file",
+      "model_arg": "--model",
+      "completion_file": ".pi-ready-{run_index}",
+      "models": [
+        {
+          "label": "OpenRouter Z.ai GLM 5.3 Flash",
+          "model": "z-ai/glm-5.3-flash",
+          "args": [
+            "--extension",
+            "{advisor_dir}/pi_glm_5_3_flash.js",
+            "--model",
+            "z-ai/glm-5.3-flash",
+            "--thinking",
+            "max"
+          ],
+          "env_file": "{utilities_dir}/.env.local",
+          "env_key": "OPENROUTER_API_KEY"
         }
       ]
     },
@@ -90,11 +115,33 @@
       "work_dir_name": "sec-advisor",
       "num_runs": 6,
       "run_seconds": 5400,
-      "command_names": ["codex", "claude"],
+      "command_names": ["codex", "pi", "claude"],
       "default_models": {
         "claude": ["claude-fable-5"]
       },
       "prompt": "You are performing internal code-quality and robustness review pass {run_index} with {agent_name} on this codebase you own: {project_dir}.\n\nGoal: improve the reliability and correctness of this project's access controls, data handling, and integrations. Review the code for defensive gaps a careful engineer would want fixed before release - places where access checks are missing or incomplete, where authentication or authorization logic may not behave as intended, where input is trusted without validation, where configuration or networking defaults are unsafe, where secrets or credentials might be logged or exposed, and where dependencies or third-party integrations may be misconfigured. Give special attention to patterns commonly produced by automated code generation that need a human's correctness review.\n\nWhen relevant, also review the configuration and integration surface with hosted platforms and services such as Convex, Vercel, Supabase, hosted auth/storage/database providers, SDKs, webhooks, CI/CD pipelines, and deployment settings - checking that they follow each provider's recommended safe-defaults.\n\nBefore starting, read any previous review files under {audit_dir} if they exist. Briefly summarize what was already covered, then take a different angle so this pass adds new value instead of repeating prior notes.\n\nWrite exactly two markdown files:\n- {audit_dir}/run-{run_index}-{agent_name}-findings.md\n- {audit_dir}/run-{run_index}-{agent_name}-fix-plan.md\n\nThe findings file should list concrete, code-referenced issues with severity, likelihood of impact, affected files, and your confidence. The fix-plan file should give an actionable remediation plan ordered by risk and dependency. If an area looks solid, say what you reviewed and why it appears acceptable. Do not make claims without code evidence."
+    },
+    "attack": {
+      "label": "Attack vulnerability review",
+      "session_name": "attack-advisor",
+      "work_dir_name": "attack-advisor",
+      "num_runs": 6,
+      "run_seconds": 5400,
+      "command_names": ["pi", "codex", "claude"],
+      "default_models": {
+        "pi": ["z-ai/glm-5.3-flash"]
+      },
+      "required_artifacts": [
+        "run-{run_index}-{agent_name}-attack-findings.md",
+        "run-{run_index}-{agent_name}-remediation-proposal.md"
+      ],
+      "required_artifact_min_bytes": 500,
+      "incomplete_artifact_markers": [
+        "_(to be filled",
+        "_(pending)_"
+      ],
+      "prompt_suffix": "Execution discipline is mandatory. Do not stop after the previous-run intake, an outline, or a working draft. Continue through repository analysis and fully complete both required markdown files with substantive evidence before becoming idle.",
+      "prompt": "You are running authorized attacker-first vulnerability review pass {run_index} with {agent_name} against this repository: {project_dir}. Treat the repository source as read-only. Your job is to find real attack vulnerabilities and propose concrete fixes.\n\nYour first action, before searching or inspecting the repository, is to inspect {audit_dir}. Read every previous `*-attack-findings.md` and `*-remediation-proposal.md` file there if any exist, along with any other findings, fix plan, final review, or capture needed to understand earlier work. In the new findings file, begin with a Previous-run intake section naming the files you read, summarizing what they covered, and stating the different attack angle this pass will take. Revalidate earlier claims against current code; do not copy them as facts. If there are no previous files, state that explicitly. Do not begin repository searches until this intake is complete.\n\nThen map the reachable attack surface and trust boundaries: routes, APIs, server actions, authentication and recovery flows, authorization and tenant checks, privileged operations, database and storage access, uploads, webhooks, background jobs, admin tools, third-party integrations, deployment configuration, and client-controlled input. Trace realistic attacker-controlled data and identity to sensitive operations. Look for authentication bypass, broken authorization, tenant escape, privilege escalation, injection, request forgery, path traversal, unsafe uploads, cross-site attacks, secret exposure, webhook forgery, replay, race conditions, business-logic abuse, unsafe provider configuration, and compound attack chains.\n\nValidate every candidate against actual code and configuration. Accept a vulnerability only when you can show a reachable entry point, the missing or bypassable control, the sensitive sink, realistic prerequisites, and concrete impact. Use read-only, non-destructive validation within the authorized project.\n\nWrite exactly two markdown files and no other artifacts:\n- {audit_dir}/run-{run_index}-{agent_name}-attack-findings.md\n- {audit_dir}/run-{run_index}-{agent_name}-remediation-proposal.md\n\nFor every accepted vulnerability, the findings file must include severity, confidence, attacker capability, prerequisites, the complete attack chain, exact file and line evidence, impact, blast radius, and a safe reproduction or validation method. Separate confirmed vulnerabilities from investigation leads and general hardening. Record important surfaces examined without a supported vulnerability.\n\nThe remediation proposal must map every confirmed vulnerability to a preferred fix, meaningful alternatives, affected files and services, compatibility or migration risks, regression tests, and verification steps. Order work by exploitable risk, blast radius, and dependency, separating urgent containment, short-term correction, and structural improvement. Do not modify project files. Always create both output files, even when no exploitable vulnerability is found. After writing them, print one short completion message containing their absolute paths."
     },
     "arch": {
       "label": "Architecture and performance review",
@@ -102,7 +149,7 @@
       "work_dir_name": "arch-advisor",
       "num_runs": 3,
       "run_seconds": 1500,
-      "command_names": ["codex", "claude"],
+      "command_names": ["codex", "pi", "claude"],
       "default_models": {
         "codex": [""],
         "claude": [""]
@@ -115,7 +162,7 @@
       "work_dir_name": "hygiene-advisor",
       "num_runs": 3,
       "run_seconds": 1500,
-      "command_names": ["codex", "claude"],
+      "command_names": ["codex", "pi", "claude"],
       "default_models": {
         "codex": [""],
         "claude": [""]
@@ -129,7 +176,7 @@
     "work_dir_name": "advisor",
     "num_runs": 3,
     "run_seconds": 1500,
-    "command_names": ["codex", "claude"],
+    "command_names": ["codex", "pi", "claude"],
     "default_models": {
       "codex": [""],
       "claude": [""]

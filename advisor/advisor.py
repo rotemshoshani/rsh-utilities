@@ -57,6 +57,8 @@ class Agent:
     command_name: str = ""
     model_label: str = ""
     model: str = ""
+    completion_marker: str = ""
+    completion_file: str = ""
     startup_keys: tuple[str, ...] = ()
     submit_keys: tuple[str, ...] = ("Enter",)
     prompt_delivery: str = "paste"
@@ -67,6 +69,8 @@ class ModelOption:
     label: str
     model: str = ""
     args: tuple[str, ...] = ()
+    env_file: str = ""
+    env_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -75,6 +79,8 @@ class CommandConfig:
     command: str
     prompt_delivery: str
     model_arg: str = "--model"
+    completion_marker: str = ""
+    completion_file: str = ""
     startup_keys: tuple[str, ...] = ()
     submit_keys: tuple[str, ...] = ("Enter",)
     models: tuple[ModelOption, ...] = ()
@@ -99,6 +105,12 @@ class Config:
     history_limit: int
     session_name: str
     prompt: str
+    required_artifacts: tuple[str, ...]
+    required_artifact_marker: str
+    required_artifact_min_bytes: int
+    incomplete_artifact_markers: tuple[str, ...]
+    max_incomplete_continuations: int
+    reviewer_artifact_min_bytes: int
     agents: tuple[Agent, ...]
     reviewer_agent: Agent | None = None
     reviewer_prompt: str = ""
@@ -114,6 +126,8 @@ class RunItem:
     command_name: str = ""
     model_label: str = ""
     model: str = ""
+    completion_marker: str = ""
+    completion_file: str = ""
     startup_keys: tuple[str, ...] = ()
     submit_keys: tuple[str, ...] = ("Enter",)
     prompt_delivery: str = "paste"
@@ -128,10 +142,14 @@ def expand_project_path(value: str) -> Path:
 
 
 def parse_model_option(item: dict[str, Any]) -> ModelOption:
+    utilities_dir = str(DEFAULT_CONFIG.parent.parent.resolve())
+    advisor_dir = str(DEFAULT_CONFIG.parent.resolve())
     return ModelOption(
         label=str(item.get("label", item.get("model", "default"))),
         model=str(item.get("model", "")),
-        args=tuple(str(arg) for arg in item.get("args", [])),
+        args=tuple(str(arg).replace("{advisor_dir}", advisor_dir) for arg in item.get("args", [])),
+        env_file=str(item.get("env_file", "")).replace("{utilities_dir}", utilities_dir),
+        env_key=str(item.get("env_key", "")),
     )
 
 
@@ -141,6 +159,8 @@ def parse_command_config(item: dict[str, Any]) -> CommandConfig:
         command=str(item["command"]),
         prompt_delivery=str(item.get("prompt_delivery", "paste")),
         model_arg=str(item.get("model_arg", "--model")),
+        completion_marker=str(item.get("completion_marker", "")),
+        completion_file=str(item.get("completion_file", "")),
         startup_keys=tuple(str(key) for key in item.get("startup_keys", [])),
         submit_keys=tuple(str(key) for key in item.get("submit_keys", ["Enter"])),
         models=tuple(parse_model_option(model) for model in item.get("models", [])),
@@ -154,6 +174,8 @@ def parse_agent(item: dict[str, Any]) -> Agent:
         command_name=str(item.get("command_name", "")),
         model_label=str(item.get("model_label", item.get("command_label", ""))),
         model=str(item.get("model", "")),
+        completion_marker=str(item.get("completion_marker", "")),
+        completion_file=str(item.get("completion_file", "")),
         startup_keys=tuple(str(key) for key in item.get("startup_keys", [])),
         submit_keys=tuple(str(key) for key in item.get("submit_keys", ["Enter"])),
         prompt_delivery=str(item.get("prompt_delivery", "paste")),
@@ -178,10 +200,27 @@ def topic_available_commands(raw: dict[str, Any], topic_raw: dict[str, Any]) -> 
 
 def build_model_command(command: CommandConfig, model: ModelOption) -> str:
     if model.args:
-        return " ".join([command.command, *(shlex.quote(arg) for arg in model.args)])
-    if model.model:
-        return f"{command.command} {shlex.quote(command.model_arg)} {shlex.quote(model.model)}"
-    return command.command
+        model_command = " ".join([command.command, *(shlex.quote(arg) for arg in model.args)])
+    elif model.model:
+        model_command = f"{command.command} {shlex.quote(command.model_arg)} {shlex.quote(model.model)}"
+    else:
+        model_command = command.command
+    if model.env_file and model.env_key:
+        return build_sourced_env_command(model_command, Path(model.env_file), model.env_key)
+    return model_command
+
+
+def build_sourced_env_command(command: str, env_file: Path, env_key: str) -> str:
+    if not env_key or not (env_key[0].isalpha() or env_key[0] == "_") or not all(
+        character.isalnum() or character == "_" for character in env_key
+    ):
+        raise ValueError(f"invalid environment key name: {env_key!r}")
+    env_path = sh_quote(str(env_file.expanduser().resolve()))
+    return (
+        f"source -- {env_path}; "
+        f': "${{{env_key}:?{env_key} is missing from {env_path}}}"; '
+        f"export {env_key}; {command}"
+    )
 
 
 def sanitize_name(value: str) -> str:
@@ -197,6 +236,8 @@ def agent_from_model(command: CommandConfig, model: ModelOption) -> Agent:
         command_name=command.name,
         model_label=model.label,
         model=model.model,
+        completion_marker=command.completion_marker,
+        completion_file=command.completion_file,
         startup_keys=command.startup_keys,
         submit_keys=command.submit_keys,
         prompt_delivery=command.prompt_delivery,
@@ -215,6 +256,10 @@ def agent_to_json(agent: Agent) -> dict[str, Any]:
         value["model_label"] = agent.model_label
     if agent.model:
         value["model"] = agent.model
+    if agent.completion_marker:
+        value["completion_marker"] = agent.completion_marker
+    if agent.completion_file:
+        value["completion_file"] = agent.completion_file
     if agent.startup_keys:
         value["startup_keys"] = list(agent.startup_keys)
     if agent.submit_keys != ("Enter",):
@@ -272,6 +317,12 @@ def config_from_resolved(
         history_limit=int(raw.get("history_limit", 200000)),
         session_name=str(raw.get("session_name", "advisor")),
         prompt=str(raw.get("prompt", "")),
+        required_artifacts=tuple(str(path) for path in raw.get("required_artifacts", [])),
+        required_artifact_marker=str(raw.get("required_artifact_marker", "")),
+        required_artifact_min_bytes=int(raw.get("required_artifact_min_bytes", 1)),
+        incomplete_artifact_markers=tuple(str(marker) for marker in raw.get("incomplete_artifact_markers", [])),
+        max_incomplete_continuations=int(raw.get("max_incomplete_continuations", 4)),
+        reviewer_artifact_min_bytes=int(raw.get("reviewer_artifact_min_bytes", 1000)),
         agents=agents,
         reviewer_agent=reviewer_agent,
         reviewer_prompt=str(raw.get("reviewer_prompt", "")),
@@ -301,6 +352,9 @@ def resolve_config(
             raise ValueError(f"unknown topic: {topic}")
         topic_raw = dict(topics[topic])
         prompt = str(topic_raw.get("prompt", raw.get("prompt", "")))
+    prompt_suffix = str(topic_raw.get("prompt_suffix", "")).strip()
+    if prompt_suffix:
+        prompt = f"{prompt.rstrip()}\n\n{prompt_suffix}"
 
     available_commands = topic_available_commands(raw, topic_raw)
     if not available_commands:
@@ -366,6 +420,12 @@ def resolve_config(
         history_limit=int(raw.get("history_limit", 200000)),
         session_name=str(topic_raw.get("session_name", raw.get("session_name", "advisor"))),
         prompt=prompt,
+        required_artifacts=tuple(str(path) for path in topic_raw.get("required_artifacts", [])),
+        required_artifact_marker=str(topic_raw.get("required_artifact_marker", "")),
+        required_artifact_min_bytes=int(topic_raw.get("required_artifact_min_bytes", 1)),
+        incomplete_artifact_markers=tuple(str(marker) for marker in topic_raw.get("incomplete_artifact_markers", [])),
+        max_incomplete_continuations=int(raw.get("max_incomplete_continuations", 4)),
+        reviewer_artifact_min_bytes=int(raw.get("reviewer_artifact_min_bytes", 1000)),
         agents=agents,
         reviewer_agent=reviewer_agent,
         reviewer_prompt=str(raw.get("reviewer_prompt", DEFAULT_REVIEWER_PROMPT)),
@@ -393,6 +453,12 @@ def config_to_resolved_json(config: Config) -> dict[str, Any]:
         "history_limit": config.history_limit,
         "session_name": config.session_name,
         "prompt": config.prompt,
+        "required_artifacts": list(config.required_artifacts),
+        "required_artifact_marker": config.required_artifact_marker,
+        "required_artifact_min_bytes": config.required_artifact_min_bytes,
+        "incomplete_artifact_markers": list(config.incomplete_artifact_markers),
+        "max_incomplete_continuations": config.max_incomplete_continuations,
+        "reviewer_artifact_min_bytes": config.reviewer_artifact_min_bytes,
         "agents": [agent_to_json(agent) for agent in config.agents],
         "reviewer_agent": agent_to_json(config.reviewer_agent) if config.reviewer_agent else None,
         "reviewer_prompt": config.reviewer_prompt,
@@ -414,6 +480,8 @@ def build_run_queue(config: Config) -> list[RunItem]:
                     command_name=agent.command_name,
                     model_label=agent.model_label,
                     model=agent.model,
+                    completion_marker=agent.completion_marker,
+                    completion_file=agent.completion_file,
                     startup_keys=agent.startup_keys,
                     submit_keys=agent.submit_keys,
                     prompt_delivery=agent.prompt_delivery,
@@ -431,6 +499,8 @@ def build_run_queue(config: Config) -> list[RunItem]:
                 command_name=agent.command_name,
                 model_label=agent.model_label,
                 model=agent.model,
+                completion_marker=agent.completion_marker,
+                completion_file=agent.completion_file,
                 startup_keys=agent.startup_keys,
                 submit_keys=agent.submit_keys,
                 prompt_delivery=agent.prompt_delivery,
@@ -564,8 +634,77 @@ def render_prompt(template: str, config: Config, item: RunItem) -> str:
     )
 
 
-def build_prompt_argument_command(command: str, prompt_file: Path) -> str:
-    return f"{command} \"$(cat {sh_quote(str(prompt_file))})\""
+def required_artifact_paths(config: Config, item: RunItem) -> tuple[Path, ...]:
+    if item.prompt_kind == "reviewer":
+        return (config.runtime_dir / "final-review.html",)
+    if item.prompt_kind != "advisor":
+        return ()
+    paths: list[Path] = []
+    for template in config.required_artifacts:
+        rendered = render_prompt(template, config, item)
+        path = Path(rendered).expanduser()
+        paths.append(path if path.is_absolute() else config.runtime_dir / path)
+    return tuple(paths)
+
+
+def completion_file_path(config: Config, item: RunItem) -> Path | None:
+    if not item.completion_file:
+        return None
+    rendered = render_prompt(item.completion_file, config, item)
+    path = Path(rendered).expanduser()
+    return path if path.is_absolute() else config.runtime_dir / path
+
+
+def missing_required_artifacts(config: Config, item: RunItem) -> tuple[Path, ...]:
+    missing: list[Path] = []
+    marker = config.required_artifact_marker.strip()
+    minimum_bytes = (
+        config.reviewer_artifact_min_bytes
+        if item.prompt_kind == "reviewer"
+        else config.required_artifact_min_bytes
+    )
+    for path in required_artifact_paths(config, item):
+        if not path.is_file() or path.stat().st_size < minimum_bytes:
+            missing.append(path)
+            continue
+        content = path.read_text(errors="replace")
+        folded = content.casefold()
+        if marker and not content.rstrip().endswith(marker):
+            missing.append(path)
+            continue
+        if any(incomplete.casefold() in folded for incomplete in config.incomplete_artifact_markers):
+            missing.append(path)
+            continue
+        if item.prompt_kind == "reviewer" and ("<html" not in folded or "</html>" not in folded):
+            missing.append(path)
+    return tuple(missing)
+
+
+def build_incomplete_continuation_prompt(paths: tuple[Path, ...]) -> str:
+    missing = "\n".join(f"- {path}" for path in paths)
+    return (
+        "Advisor validation rejected the current output as incomplete. Continue the original assignment in this "
+        "same Pi session now; do not stop at an outline, working draft, placeholder, or intake-only report.\n\n"
+        f"Required artifacts still missing or incomplete:\n{missing}\n\n"
+        "Return to repository analysis, gather concrete code evidence, replace every placeholder with substantive "
+        "content, and fully complete each required artifact. If no vulnerability or recommendation is supported, "
+        "document the surfaces examined and the evidence for that conclusion. Do not merely describe what remains "
+        "to do. Finish the files themselves before becoming idle again."
+    )
+
+
+def build_prompt_argument_command(command: str, prompt_file: Path, completion_marker: str = "") -> str:
+    prompt_command = f"{command} \"$(cat {sh_quote(str(prompt_file))})\""
+    if completion_marker:
+        return f"{prompt_command}; printf '\\n%s\\n' {sh_quote(completion_marker)}"
+    return prompt_command
+
+
+def build_prompt_at_file_command(command: str, prompt_file: Path, completion_marker: str = "") -> str:
+    prompt_command = f"{command} {sh_quote(f'@{prompt_file}')}"
+    if completion_marker:
+        return f"{prompt_command}; printf '\\n%s\\n' {sh_quote(completion_marker)}"
+    return prompt_command
 
 
 def last_non_empty_line(text: str) -> str:
@@ -594,6 +733,8 @@ class Controller:
         self.last_ready_check_line: str | None = None
         self.last_ready_check_at: str | None = None
         self.ready_detected = False
+        self.missing_required_artifacts: list[str] = []
+        self.incomplete_continuations = 0
         self.capture_dir = config.runtime_dir / "captures"
 
     def run(self) -> None:
@@ -619,17 +760,32 @@ class Controller:
         self.current_index = item.index
         self.phase = "launching"
         self.remaining_seconds = None
+        self.ready_detected = False
+        self.last_ready_check_line = None
+        self.last_ready_check_at = None
+        self.missing_required_artifacts = []
+        self.incomplete_continuations = 0
+        ready_file = completion_file_path(self.config, item)
+        if ready_file is not None:
+            ready_file.unlink(missing_ok=True)
         self.render()
 
         self.recycle_worker()
         self.cd_worker()
         prompt_template = self.config.reviewer_prompt if item.prompt_kind == "reviewer" else self.config.prompt
         prompt = render_prompt(prompt_template, self.config, item)
-        if item.prompt_delivery == "argument_file":
+        command = item.command
+        if ready_file is not None:
+            command = f"export ADVISOR_READY_FILE={sh_quote(str(ready_file))}; {command}"
+        if item.prompt_delivery in {"argument_file", "at_file"}:
             prompt_file = self.write_prompt_file(prompt)
-            self.send_shell_command(build_prompt_argument_command(item.command, prompt_file))
+            if item.prompt_delivery == "at_file":
+                prompt_command = build_prompt_at_file_command(command, prompt_file, item.completion_marker)
+            else:
+                prompt_command = build_prompt_argument_command(command, prompt_file, item.completion_marker)
+            self.send_shell_command(prompt_command)
         else:
-            self.send_shell_command(item.command)
+            self.send_shell_command(command)
         self.sleep_with_controls(self.config.startup_wait_seconds, "startup wait")
 
         for key in item.startup_keys:
@@ -644,13 +800,47 @@ class Controller:
             self.paste_prompt(prompt)
             for key in item.submit_keys:
                 self.send_key(key)
-        elif item.prompt_delivery != "argument_file":
+        elif item.prompt_delivery not in {"argument_file", "at_file"}:
             raise ValueError(f"unsupported prompt_delivery for {item.agent_name}: {item.prompt_delivery}")
 
         run_seconds = self.config.reviewer_run_seconds if item.prompt_kind == "reviewer" else self.config.run_seconds
         ready_item = item if should_check_ready_for_item(item, self.config.ready_command_names) else None
-        self.sleep_with_controls(run_seconds, "agent working", ready_item=ready_item)
+        wait_result = self.sleep_with_controls(run_seconds, "agent working", ready_item=ready_item)
         self.capture_run(item)
+        if wait_result == "error":
+            self.terminate_worker()
+            self.phase = "failed: agent/provider error"
+            self.remaining_seconds = None
+            write_json(
+                self.config.runtime_dir / "run-failure.json",
+                {
+                    "run_index": item.index,
+                    "agent": item.agent_name,
+                    "reason": "agent or provider error",
+                },
+            )
+            self.render()
+            raise RuntimeError(f"run {item.index} stopped after an agent or provider error")
+        if wait_result == "elapsed":
+            self.terminate_worker()
+        missing = missing_required_artifacts(self.config, item)
+        if missing:
+            self.terminate_worker()
+            self.missing_required_artifacts = [str(path) for path in missing]
+            self.phase = "failed: missing required artifacts"
+            self.remaining_seconds = None
+            write_json(
+                self.config.runtime_dir / "run-failure.json",
+                {
+                    "run_index": item.index,
+                    "agent": item.agent_name,
+                    "reason": "missing, empty, or incomplete required artifacts",
+                    "missing_required_artifacts": self.missing_required_artifacts,
+                },
+            )
+            self.render()
+            names = ", ".join(path.name for path in missing)
+            raise RuntimeError(f"run {item.index} exited without required artifacts: {names}")
         self.completed.add(item.index)
         self.current_index = None
         self.phase = "captured"
@@ -661,6 +851,10 @@ class Controller:
         if tmux_target_exists(self.worker_pane):
             tmux("respawn-pane", "-k", "-t", self.worker_pane, "-c", str(self.config.project_dir))
             self.sleep_with_controls(1, "fresh shell")
+
+    def terminate_worker(self) -> None:
+        if tmux_target_exists(self.worker_pane):
+            tmux("respawn-pane", "-k", "-t", self.worker_pane, "-c", str(self.config.project_dir))
 
     def cd_worker(self) -> None:
         self.phase = "cd project"
@@ -679,11 +873,40 @@ class Controller:
         prompt_file.write_text(prompt)
         return prompt_file
 
-    def paste_prompt(self, prompt: str) -> None:
-        prompt_file = self.write_prompt_file(prompt)
+    def paste_prompt(self, prompt: str, filename: str = "last-prompt.txt") -> None:
+        prompt_file = self.config.runtime_dir / filename
+        prompt_file.write_text(prompt)
         buffer_name = f"advisor-{os.getpid()}"
         tmux("load-buffer", "-b", buffer_name, str(prompt_file))
-        tmux("paste-buffer", "-d", "-b", buffer_name, "-t", self.worker_pane)
+        # Preserve the follow-up as one multiline editor paste. Without these
+        # flags tmux turns each newline into Enter and Pi submits many messages.
+        tmux("paste-buffer", "-d", "-p", "-r", "-b", buffer_name, "-t", self.worker_pane)
+
+    def continue_incomplete_run(self, item: RunItem, missing: tuple[Path, ...]) -> None:
+        ready_file = completion_file_path(self.config, item)
+        if ready_file is not None:
+            ready_file.unlink(missing_ok=True)
+        self.incomplete_continuations += 1
+        self.ready_detected = False
+        self.missing_required_artifacts = [str(path) for path in missing]
+        self.phase = (
+            f"continuing incomplete output "
+            f"({self.incomplete_continuations}/{self.config.max_incomplete_continuations})"
+        )
+        write_json(
+            self.config.runtime_dir / "last-incomplete-continuation.json",
+            {
+                "run_index": item.index,
+                "agent": item.agent_name,
+                "attempt": self.incomplete_continuations,
+                "missing_or_incomplete": self.missing_required_artifacts,
+                "continued_at": datetime.now().isoformat(timespec="seconds"),
+            },
+        )
+        self.render()
+        continuation = build_incomplete_continuation_prompt(missing)
+        self.paste_prompt(continuation, f"continuation-prompt-{item.index}.txt")
+        self.send_key("Enter")
 
     def capture_run(self, item: RunItem) -> None:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -718,8 +941,12 @@ class Controller:
         ).stdout
 
     def check_ready_marker(self, item: RunItem) -> bool:
-        captured = self.capture_worker_tail(self.config.ready_check_lines)
-        last_line = last_non_empty_line(captured)
+        ready_file = completion_file_path(self.config, item)
+        if ready_file is not None and ready_file.is_file():
+            last_line = last_non_empty_line(ready_file.read_text(errors="replace"))
+        else:
+            captured = self.capture_worker_tail(self.config.ready_check_lines)
+            last_line = last_non_empty_line(captured)
         matched_marker = ready_marker_match(last_line, self.config.ready_markers)
         checked_at = datetime.now().isoformat(timespec="seconds")
         self.last_ready_check_line = last_line
@@ -737,6 +964,19 @@ class Controller:
             },
         )
         return bool(matched_marker)
+
+    def check_error_marker(self, item: RunItem) -> bool:
+        ready_file = completion_file_path(self.config, item)
+        if ready_file is None or not ready_file.is_file():
+            return False
+        last_line = last_non_empty_line(ready_file.read_text(errors="replace"))
+        if last_line != "Error":
+            return False
+        self.last_ready_check_line = last_line
+        self.last_ready_check_at = datetime.now().isoformat(timespec="seconds")
+        self.ready_detected = False
+        self.render()
+        return True
 
     def sleep_with_controls(self, seconds: int, phase: str, ready_item: RunItem | None = None) -> str:
         if ready_item is not None:
@@ -780,7 +1020,28 @@ class Controller:
                 self.render()
                 return "finish"
             if time.time() >= next_ready_check:
+                if self.check_error_marker(ready_item):
+                    self.remaining_seconds = None
+                    self.phase = f"{phase} agent/provider error"
+                    self.render()
+                    return "error"
                 if self.check_ready_marker(ready_item):
+                    missing = missing_required_artifacts(self.config, ready_item)
+                    if missing and completion_file_path(self.config, ready_item) is not None:
+                        if self.incomplete_continuations < self.config.max_incomplete_continuations:
+                            self.continue_incomplete_run(ready_item, missing)
+                            # A continuation is a real follow-up turn, so give it the same
+                            # work window as the original prompt instead of inheriting a
+                            # nearly-expired deadline.
+                            deadline = time.time() + max(0, seconds)
+                            next_ready_check = time.time() + max(1, self.config.ready_check_seconds)
+                            continue
+                        self.missing_required_artifacts = [str(path) for path in missing]
+                        self.remaining_seconds = None
+                        self.phase = f"{phase} incomplete after continuations"
+                        self.render()
+                        return "incomplete"
+                    self.missing_required_artifacts = []
                     self.remaining_seconds = None
                     self.phase = f"{phase} ready"
                     self.render()
@@ -818,6 +1079,8 @@ class Controller:
                 "ready_detected": self.ready_detected,
                 "last_ready_check_line": self.last_ready_check_line,
                 "last_ready_check_at": self.last_ready_check_at,
+                "missing_required_artifacts": self.missing_required_artifacts,
+                "incomplete_continuations": self.incomplete_continuations,
                 "updated_at": datetime.now().isoformat(timespec="seconds"),
             },
         )
@@ -951,6 +1214,7 @@ def build_review_screen(config: Config) -> str:
             command_name=first_agent.command_name,
             model_label=first_agent.model_label,
             model=first_agent.model,
+            completion_marker=first_agent.completion_marker,
             startup_keys=first_agent.startup_keys,
             submit_keys=first_agent.submit_keys,
             prompt_delivery=first_agent.prompt_delivery,
@@ -1024,10 +1288,32 @@ def reviewer_agent_from_model(command: CommandConfig, model: ModelOption) -> Age
         command_name=base.command_name,
         model_label=base.model_label,
         model=base.model,
+        completion_marker=base.completion_marker,
+        completion_file=base.completion_file,
         startup_keys=base.startup_keys,
         submit_keys=base.submit_keys,
         prompt_delivery=base.prompt_delivery,
     )
+
+
+def reviewer_agent_for_cli(
+    raw: dict[str, Any], topic_raw: dict[str, Any], command_name: str, model_name: str
+) -> Agent:
+    commands = topic_available_commands(raw, topic_raw)
+    if command_name not in commands:
+        raise ValueError(f"reviewer command is unavailable for this topic: {command_name}")
+    command = commands[command_name]
+    models = command.models or (ModelOption(label="default"),)
+    if model_name:
+        matches = [model for model in models if model.model == model_name or model.label == model_name]
+        if not matches:
+            raise ValueError(f"unknown reviewer model for {command_name}: {model_name}")
+        model = matches[0]
+    elif len(models) == 1:
+        model = models[0]
+    else:
+        model = next((candidate for candidate in models if not candidate.model), models[0])
+    return reviewer_agent_from_model(command, model)
 
 
 def select_reviewer_model(raw: dict[str, Any], topic_raw: dict[str, Any]) -> Agent | None:
@@ -1105,7 +1391,21 @@ def start_session(args: argparse.Namespace) -> None:
     if args.no_tui:
         topic_override = args.topic or None
         initial = resolve_config(raw, project_dir, topic_override=topic_override)
-        config = resolve_config(raw, project_dir, topic_override=topic_override, runtime_dir_override=make_runtime_dir(project_dir, initial.work_dir_name))
+        topic_raw = topic_raw_for(raw, initial.topic)
+        reviewer_agent = (
+            reviewer_agent_for_cli(raw, topic_raw, args.reviewer, args.reviewer_model)
+            if args.reviewer
+            else None
+        )
+        config = resolve_config(
+            raw,
+            project_dir,
+            topic_override=topic_override,
+            runtime_dir_override=make_runtime_dir(project_dir, initial.work_dir_name),
+            reviewer_agent=reviewer_agent,
+            num_runs_override=args.cycles,
+            run_seconds_override=args.seconds,
+        )
     else:
         config = run_wizard(raw, project_dir)
 
@@ -1255,8 +1555,12 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="start or attach to an advisor tmux session")
     run.add_argument("project_dir", nargs="?", default="", help="repo path to review; overrides config.json project_dir")
     run.add_argument("--session", default="", help="override tmux session name")
-    run.add_argument("--topic", choices=["sec", "arch", "hygiene", "custom"], default="", help="topic for --no-tui runs")
+    run.add_argument("--topic", choices=["sec", "attack", "arch", "hygiene", "custom"], default="", help="topic for --no-tui runs")
     run.add_argument("--no-tui", action="store_true", help="skip fzf wizard and use config defaults")
+    run.add_argument("--cycles", type=int, default=None, help="override cycle count for --no-tui runs")
+    run.add_argument("--seconds", type=int, default=None, help="override seconds per agent for --no-tui runs")
+    run.add_argument("--reviewer", default="", help="reviewer command name for --no-tui runs, for example pi")
+    run.add_argument("--reviewer-model", default="", help="reviewer model ID for --no-tui runs")
     run.add_argument("--no-attach", action="store_true", help="create session without attaching")
     run.set_defaults(func=start_session)
 
@@ -1287,6 +1591,7 @@ def build_parser() -> argparse.ArgumentParser:
     stat = sub.add_parser("status", help="print JSON controller state")
     stat.add_argument("project_dir", nargs="?", default="", help="repo path; overrides config.json project_dir")
     stat.set_defaults(func=status)
+
     return parser
 
 
