@@ -38,6 +38,21 @@ own, so the agent never passes a pane ID. Outside Herdr it exits 3 rather than
 falling back to a blocking sleep — a fallback that pins the turn defeats the
 whole point.
 
+### Choose the waiting workflow
+
+Before waiting, run `test "${HERDR_ENV:-}" = 1` and use only its exit status;
+do not print environment values. This is the same context check the executable
+uses. `HERDR_PANE_ID` alone is not a reliable context check: it can be missing
+or stale under a shared app-server.
+
+- Check succeeds: use only `herdr-delay` for polling and deferred checks.
+  Scheduling or pane-resolution errors are blockers, not permission to switch
+  to direct polling.
+- Check fails: in the user's two-workflow setup, this is the ChatGPT/Codex app.
+  Run commands normally and poll process sessions or read-only status checks
+  directly at meaningful intervals, with bounded tool waits and a deadline.
+  Continue the task when the job finishes; no Herdr callback will arrive.
+
 ### Which pane gets woken
 
 `$HERDR_PANE_ID` is used when a live agent occupies that pane. It often is not.
@@ -148,16 +163,25 @@ Paste this into projects where agents should use it:
 ```markdown
 ## Waiting on slow things
 
-Never poll a long-running check in a loop — it costs a turn per poll. Use
-`herdr-delay`, which returns immediately and prompts you once with the result:
+First check `test "${HERDR_ENV:-}" = 1` without printing the value. This
+boolean runtime-context check is permitted.
+
+If it fails, use the ChatGPT/Codex app workflow: run commands normally and
+poll process sessions or read-only status checks directly, typically every
+30–60 seconds, with bounded tool waits and an explicit deadline. Stop when
+the job completes or fails, and continue the task in the same turn.
+
+If it succeeds, use only `herdr-delay` for polling and deferred checks:
 
 - Fixed wait:   `herdr-delay 10m 'reason'`
 - Run it later: `herdr-delay --in 5m --then 'npm run preflight'`
 - Poll for it:  `herdr-delay --until 'CMD' --every 60s --deadline 30m`
   (`--until` resolves when CMD exits 0; pipe status output through `grep -q`.)
 
-After running it, END YOUR TURN. Do not sleep, poll, or re-run the check.
-You will be prompted automatically when it resolves.
+After scheduling, END YOUR TURN. The callback resumes the task. If scheduling
+or pane resolution fails, report the blocker; do not switch to direct polling.
+`HERDR_PANE_ID` alone cannot choose the workflow because it can be stale.
+Avoid `sleep`, busy loops, and ad hoc detached processes in either workflow.
 ```
 
 ## Tests
