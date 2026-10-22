@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-time"
+version = "0.1.0"
+description = "Local Codex turn time reports by project."
+requires-python = ">=3.10"
+readme = "README.md"
+
+[project.scripts]
+agent-time = "agent_time.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
