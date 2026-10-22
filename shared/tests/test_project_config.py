@@ -34,6 +34,12 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b"interval_seconds", result.stderr)
 
+    def test_uat_port(self) -> None:
+        for value in (4319, None):
+            self.assertEqual(self.read({'version': 1, 'dev_env': {'uat_port': value}}).returncode, 0)
+        for value in (80, 65536, True, '4319'):
+            self.assertNotEqual(self.read({'version': 1, 'dev_env': {'uat_port': value}}).returncode, 0)
+
     def test_rejects_unknown_field_and_version(self) -> None:
         unknown = self.read({"version": 1, "council": {"unknown": True}}, "council")
         version = self.read({"version": 2})

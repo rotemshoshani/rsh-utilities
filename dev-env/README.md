@@ -141,12 +141,35 @@ Or via environment variables:
 DEV_ENV_TOP="pnpm api:dev" DEV_ENV_BOTTOM="pnpm web:dev" dev-env
 ```
 
-### Project configuration
+### Optional UAT time collector
+
+For apps with development activity instrumentation (currently Meatbar), set
+`"uat_port": 4319` inside `dev_env` in `.rsh-utils.json`, or use
+`dev-env --uat-port 4319`. Use a distinct port for each project. The launcher
+starts `agent-time serve` in an `agent-time-uat` window and supplies the
+non-secret `AGENT_TIME_UAT_PORT` runtime port to workers. The collector binds
+only to `127.0.0.1`; the app forwards its anonymous activity signals to it.
+It ends when the tmux session is closed. Normal top/bottom restarts leave it up.
+
+To enable it in an existing session without restarting the backend:
+
+```bash
+dev-env --attach-uat --uat-port 4319
+```
+
+This starts/reuses the collector and restarts only the bottom worker. An
+occupied port belonging to another service or project is refused. On a fresh
+launch, `--no-uat` overrides configured collection. `DEV_ENV_UAT_PORT` can also
+set the port. Collection is opt-in; ordinary projects keep their current setup.
+Check the collector window if startup fails, and use `agent-time report` for
+estimated UAT totals. The app remains usable if the collector is down.
+
+### Project configuration fields
 
 Copy the parent repository's [`.rsh-utils.example.json`](../.rsh-utils.example.json)
 to `.rsh-utils.json` in the directory where you run `dev-env`. Its optional
 `dev_env` section can set the commands, `mode` (`normal`, `pull`, or `sync`),
-repair behavior, remote/branch, interval, and restart hours. Use
+repair behavior, remote/branch, interval, restart hours, and optional UAT port. Use
 `"restart_hours": null` to disable scheduled restarts.
 
 The file is read only from the current directory. CLI options override

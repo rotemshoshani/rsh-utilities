@@ -10,6 +10,7 @@ from datetime import date, datetime, time as day_time, timedelta
 from pathlib import Path
 
 from .core import connect, ingest, initialize, project_for, report_rows, totals, tracking_start
+from . import uat
 
 
 def date_range(args: argparse.Namespace, today: date | None = None) -> tuple[float, float]:
@@ -47,6 +48,9 @@ def parser() -> argparse.ArgumentParser:
                    default=Path(os.environ.get('XDG_DATA_HOME', str(Path.home() / '.local/share'))) / 'agent-time')
     commands = p.add_subparsers(dest='command', required=True)
     commands.add_parser('init', help='Begin tracking future turns (safe to repeat).')
+    listener = commands.add_parser('serve', help='Collect development activity on loopback.')
+    listener.add_argument('--project', type=Path, required=True)
+    listener.add_argument('--port', type=int, required=True)
     for name in ('report', 'turns'):
         sub = commands.add_parser(name, help='Import new records and show ' + name + '.')
         sub.add_argument('--period', choices=('today', 'week'))
@@ -60,8 +64,19 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     db = None
     try:
+        if args.command == 'serve':
+            if not 1024 <= args.port <= 65535:
+                raise ValueError('Invalid port')
+            with uat.make_server(args.data_dir.expanduser() / 'timing.sqlite3', str(args.project), args.port) as server:
+                print(f'UAT collector on 127.0.0.1:{args.port}; idle threshold: 120s', flush=True)
+                try:
+                    server.serve_forever()
+                except KeyboardInterrupt:
+                    pass
+            return 0
         bounds = date_range(args) if args.command != 'init' else None
         db = connect(args.data_dir.expanduser() / 'timing.sqlite3')
+        uat.setup(db)
         if args.command == 'init':
             since = initialize(db, time.time())
             print('Tracking turns starting from ' + datetime.fromtimestamp(since).astimezone().isoformat())
@@ -94,8 +109,13 @@ def main(argv: list[str] | None = None) -> int:
                       f"{counts['incomplete']:>10}  {duration(agent):>13}  {duration(active):>17}  {safe(project)}")
             agent, active = totals(rows)
             print(f'Total agent time: {duration(agent)}; elapsed active: {duration(active)}')
+            estimates, overall = uat.report(db, start, end, selected)
+            print('\nEstimated UAT (120s idle tail; overlapping tabs counted once):')
+            for project, seconds in sorted(estimates.items()):
+                print(f'{duration(seconds):>13}  {safe(project)}')
+            print(f'Total estimated UAT: {duration(overall)}')
         if not rows:
-            print('No tracked turns in this range.')
+            print('No tracked agent turns in this range.')
         incomplete = db.execute("SELECT COUNT(*) FROM turns WHERE end IS NULL").fetchone()[0]
         print(f"Coverage: {coverage['files']} session files; {coverage['excluded']} subagent files excluded; "
               f"{incomplete} unfinished turns across all dates (excluded from totals).")

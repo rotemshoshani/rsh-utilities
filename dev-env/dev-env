@@ -25,6 +25,50 @@ PULL_BRANCH="dev"
 PULL_INTERVAL=30
 RESTART_HOURS="3"
 RESTART_SECONDS="10800"
+UAT_PORT=0
+ATTACH_UAT=0
+
+set_uat_port() {
+  [[ "$1" =~ ^[0-9]{1,5}$ ]] && (( 10#$1 >= 1024 && 10#$1 <= 65535 )) || {
+    echo 'dev-env: UAT port must be between 1024 and 65535' >&2; return 1;
+  }
+  UAT_PORT="$((10#$1))"
+}
+
+start_uat_listener() {
+  [[ "$UAT_PORT" != 0 ]] || return 0
+  local listener="$UTILITIES_ROOT/agent-time/agent-time" state command
+  # Port health contains only our service marker and project path. Never reuse
+  # another project's listener, or restart an unrelated process to claim a port.
+  state=$(PYTHONPATH="$UTILITIES_ROOT/agent-time/src" python3 - "$PROJ_DIR" "$UAT_PORT" <<'PY'
+import json, socket, sys, urllib.request
+from agent_time.core import project_for
+port = int(sys.argv[2])
+with socket.socket() as sock:
+    try:
+        sock.bind(('127.0.0.1', port))
+        print('new')
+        sys.exit(0)
+    except OSError:
+        pass
+try:
+    with urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=1) as response:
+        data = json.loads(response.read(4096))
+    if data.get('service') == 'agent-time-uat' and data.get('project') == project_for(sys.argv[1]):
+        print('existing')
+        sys.exit(0)
+except Exception:
+    pass
+print('dev-env: UAT port is occupied by another service or project', file=sys.stderr)
+sys.exit(1)
+PY
+  ) || return 1
+  if [[ "$state" == new ]]; then
+    command=$(printf '%q serve --project %q --port %q' "$listener" "$PROJ_DIR" "$UAT_PORT")
+    tmux new-window -d -t "$SESSION" -n agent-time-uat -c "$PROJ_DIR" "$command"
+  fi
+  tmux set-environment -t "$SESSION" AGENT_TIME_UAT_PORT "$UAT_PORT"
+}
 
 canonical_dir() {
   (cd "$1" && pwd -P)
@@ -84,6 +128,7 @@ load_project_config() {
       branch) PULL_BRANCH="$value" ;;
       interval_seconds) PULL_INTERVAL="$value" ;;
       restart_hours) set_restart_hours "$value" || { rm -f "$config_output"; return 1; } ;;
+      uat_port) UAT_PORT="$value" ;;
     esac
   done <"$config_output"
   rm -f "$config_output"
@@ -570,6 +615,7 @@ if [[ -v DEV_ENV_PULL_INTERVAL ]]; then
   PULL_INTERVAL="$((10#$DEV_ENV_PULL_INTERVAL))"
 fi
 [[ -v DEV_ENV_RESTART_HOURS ]] && set_restart_hours "$DEV_ENV_RESTART_HOURS"
+[[ -v DEV_ENV_UAT_PORT ]] && set_uat_port "$DEV_ENV_UAT_PORT"
 
 usage() {
   cat <<EOF
@@ -596,11 +642,15 @@ Options:
   --override CMD1 CMD2   Override the top/bottom commands.
   --restart HOURS        Restart both commands every HOURS hours (default: 3).
   --no-restart           Disable automatic restarts.
+  --uat-port PORT        Start a loopback agent-time UAT listener for this project.
+  --no-uat               Disable UAT collection selected by project config.
+  --attach-uat           Add listener to the existing session; restart only BOTTOM.
   -h, --help             Show this help.
 
 Project config: .rsh-utils.json in the current directory. CLI > environment > config > defaults.
 Env: DEV_ENV_TOP, DEV_ENV_BOTTOM, DEV_ENV_MODE, DEV_ENV_REPAIR,
-     DEV_ENV_PULL_REMOTE, DEV_ENV_PULL_BRANCH, DEV_ENV_PULL_INTERVAL, DEV_ENV_RESTART_HOURS.
+     DEV_ENV_PULL_REMOTE, DEV_ENV_PULL_BRANCH, DEV_ENV_PULL_INTERVAL, DEV_ENV_RESTART_HOURS,
+     DEV_ENV_UAT_PORT.
 
 Re-running in a directory with an existing session replaces it with a fresh one.
 EOF
@@ -754,6 +804,13 @@ while [[ $# -gt 0 ]]; do
       RESTART_SECONDS="0"
       shift
       ;;
+    --uat-port)
+      [[ $# -ge 2 ]] || { echo '--uat-port needs PORT' >&2; exit 1; }
+      set_uat_port "$2"
+      shift 2
+      ;;
+    --no-uat) UAT_PORT=0; shift ;;
+    --attach-uat) ATTACH_UAT=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage >&2; exit 1 ;;
   esac
@@ -765,6 +822,16 @@ if [[ "$PULL_WATCH" == "1" ]]; then
 fi
 
 SESSION="dev-$(basename "$PROJ_DIR" | tr -c '[:alnum:]_-' '_' | tr -s '_' | sed 's/^_//; s/_$//')"
+if [[ "$ATTACH_UAT" == 1 ]]; then
+  [[ "$UAT_PORT" != 0 ]] || { echo 'dev-env: --attach-uat needs a configured UAT port' >&2; exit 1; }
+  tmux has-session -t "$SESSION" 2>/dev/null || { echo 'dev-env: no existing project session' >&2; exit 1; }
+  BOT_ID=$(tmux show-environment -t "$SESSION" DEV_BOT_ID | cut -d= -f2-)
+  [[ "$BOT_ID" =~ ^%[0-9]+$ ]] || { echo 'dev-env: existing session has no bottom pane' >&2; exit 1; }
+  start_uat_listener
+  tmux respawn-pane -k -t "$BOT_ID"
+  printf 'dev-env: UAT listener enabled on port %s; bottom worker restarted\n' "$UAT_PORT"
+  exit 0
+fi
 PROJECT_CACHE_KEY="$(printf '%s' "$(canonical_dir "$PROJ_DIR")" | cksum | awk '{ print $1 }')"
 if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
   CACHE_ROOT="$XDG_CACHE_HOME/dev-env"
@@ -800,6 +867,12 @@ TERM_H=$(tput lines 2>/dev/null || echo 50)
 CTRL_ID=$(tmux new-session -d -s "$SESSION" -n dev -c "$PROJ_DIR" \
             -x "$TERM_W" -y "$TERM_H" \
             -P -F '#{pane_id}' "$CTRL_CMD")
+
+start_uat_listener
+if [[ "$UAT_PORT" == 0 ]]; then
+  # Override a stale value inherited from the tmux server's environment.
+  tmux set-environment -t "$SESSION" AGENT_TIME_UAT_PORT 0
+fi
 
 # Set up the status bar BEFORE splits so window_height reflects the final layout.
 tmux set-option -t "$SESSION" status on

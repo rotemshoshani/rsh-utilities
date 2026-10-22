@@ -21,6 +21,8 @@ every supported config change. Do not place secrets in `.rsh-utils.json`.
 Local terminal reports of Codex CLI and ChatGPT desktop turn time per project.
 Tracks future turns, combines worktrees, and shows summed agent time alongside
 elapsed active time with overlaps counted once. No prompting-time monitoring.
+An optional loopback collector also reports estimated UAT time from development
+click/scroll signals, with `dev-env` managing its lifecycle.
 
 ### [arch-advisor](arch-advisor/)
 Autonomous tmux runner for repeated AI architecture and performance review passes. It writes code-referenced findings and optimization plans around deployment, database/query patterns, caching, runtime hot paths, observability, and cost/performance tradeoffs.

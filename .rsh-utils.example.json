@@ -8,7 +8,8 @@
     "remote": "origin",
     "branch": "dev",
     "interval_seconds": 30,
-    "restart_hours": 3
+    "restart_hours": 3,
+    "uat_port": null
   },
   "council": {
     "claude_command": "claude --dangerously-skip-permissions",

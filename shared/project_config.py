@@ -53,9 +53,18 @@ def validate_section(raw: dict[str, Any], section: str, fields: set[str]) -> dic
 def dev_env_values(raw: dict[str, Any]) -> dict[str, str]:
     data = validate_section(raw, "dev_env", {
         "top_command", "bottom_command", "mode", "repair", "remote", "branch",
-        "interval_seconds", "restart_hours",
+        "interval_seconds", "restart_hours", "uat_port",
     })
     result: dict[str, str] = {}
+    if "uat_port" in data:
+        port = data['uat_port']
+        if port is None:
+            result['uat_port'] = '0'
+        else:
+            port = integer(port, 'dev_env.uat_port', 1024)
+            if port > 65535:
+                fail('dev_env.uat_port must be at most 65535')
+            result['uat_port'] = str(port)
     for field in ("top_command", "bottom_command", "remote", "branch"):
         if field in data:
             result[field] = string(data[field], f"dev_env.{field}")

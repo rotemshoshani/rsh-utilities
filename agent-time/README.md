@@ -62,6 +62,41 @@ with identical folder names remain distinguishable.
 
 ## Storage and compatibility
 
+### Estimated UAT activity
+
+`agent-time serve --project /path/to/project --port 4319` starts an optional
+loopback-only collector. `dev-env` can manage it in an `agent-time-uat` tmux
+window using `dev_env.uat_port` in the project's launcher config, or
+`--uat-port 4319`. Each project needs a distinct port. For an already running
+environment, `dev-env --attach-uat` starts/reuses its configured collector and
+restarts only the bottom frontend worker to pass the port to it.
+
+The app needs a development-only integration; ordinary request logs are not
+activity signals. Meatbar has the first integration: trusted, focused clicks
+and scrolls send at most one small signal every ten seconds through its same-origin
+`/api/dev-activity` endpoint. The endpoint forwards only an anonymous tab ID,
+sequence number, and `activity`/`hidden` kind to loopback. No keys, text, routes,
+DOM targets, cookies, or application content enter the timing database. No
+signals are sent on page load or by a periodic heartbeat. Production disables
+both the component and endpoint. Collector failure drops signals without retries.
+
+Each activity signal marks a 120-second interval from its receive time. New
+activity extends that interval; hiding/unloading a tab shortens its remaining
+tail. Overlapping tabs merge, as do overlapping projects in the overall UAT
+total. Reports never count future seconds before they elapse. Missing hide
+events leave at most a two-minute idle tail. The ten-second throttle can miss
+up to ten seconds of activity near the final interaction; this is an estimate,
+not a billable-time record. Passive reading, keyboard-only activity, and browser
+automation are not reliably distinguished or measured. Agent time and UAT time
+remain separate; they are not added together.
+
+Run `agent-time report --project /path/to/project` to see **Estimated UAT**.
+The collector adds `uat_tabs` (anonymous sequencing state) and `uat_intervals`
+to the existing local SQLite database, preserving the agent tracking cutoff
+and history. Its `/health` endpoint reports only service/project metadata.
+
+### Agent sources
+
 Sources are `$CODEX_HOME/sessions` and `$CODEX_HOME/archived_sessions`, defaulting
 to `~/.codex`. Data is stored in
 `${XDG_DATA_HOME:-~/.local/share}/agent-time/timing.sqlite3`. The database contains
