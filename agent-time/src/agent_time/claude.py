@@ -4,7 +4,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from .core import ingest, project_for, timestamp, tracking_start
+from .core import ingest, project_for, timestamp, tracking_start, native_source
 from .claude_hooks import setup
 
 SCHEMA = '''CREATE TABLE IF NOT EXISTS claude_files (
@@ -90,6 +90,7 @@ def ingest_claude(db: sqlite3.Connection, home: Path) -> dict[str, int]:
                         project = projects[cwd]
                     db.execute('''INSERT OR IGNORE INTO turns(session,turn,project,start,end,status)
                                   VALUES (?,?,?,?,?,'completed')''', (sid, turn, project, start, end))
+                    native_source(db, sid, turn, 'claude')
                     values['boundaries'] += 1
                 db.execute('INSERT OR REPLACE INTO claude_files VALUES (?,?,?,?,?,?,?,?,?,?)',
                            (str(path), stat.st_dev, stat.st_ino, offset, stat.st_mtime_ns,
@@ -102,7 +103,7 @@ def ingest_claude(db: sqlite3.Connection, home: Path) -> dict[str, int]:
     return counts
 
 
-def ingest_all(db: sqlite3.Connection, codex_home: Path, claude_home: Path) -> dict[str, int]:
+def ingest_all(db: sqlite3.Connection, codex_home: Path, claude_home: Path, t3_db: Path | None = None) -> dict[str, int]:
     counts = ingest(db, codex_home)
     other = ingest_claude(db, claude_home)
     counts['claude_files'] = other['files']
@@ -110,4 +111,7 @@ def ingest_all(db: sqlite3.Connection, codex_home: Path, claude_home: Path) -> d
     counts['claude_excluded'] = other['excluded']
     for key in ('unreadable', 'partial', 'invalid', 'unsupported', 'untimed'):
         counts[key] += other[key]
+    from .t3 import ingest_t3
+    t3 = ingest_t3(db, t3_db) if t3_db is not None else {}
+    counts.update({'t3_' + key: value for key, value in t3.items()})
     return counts

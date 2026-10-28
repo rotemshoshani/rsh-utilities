@@ -67,7 +67,7 @@ class HookTests(unittest.TestCase):
 
     def test_cli_filters_and_labels_launcher(self):
         self.event('UserPromptSubmit',120);self.event('Stop',130)
-        args=['--data-dir',str(self.root),'--codex-home',str(self.root/'codex'),
+        args=['--data-dir',str(self.root),'--t3-db', str(self.root / 'no-t3.sqlite'), '--codex-home',str(self.root/'codex'),
               '--claude-home',str(self.root/'claude'),'turns','--from','1970-01-01','--to','1970-01-02','--source']
         out=io.StringIO()
         with contextlib.redirect_stdout(out):self.assertEqual(main(args+['claude']),0)

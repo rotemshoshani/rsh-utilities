@@ -1,6 +1,6 @@
 # agent-time
 
-Local terminal reports of Codex and Claude Code turn time per project. Reads
+Local terminal reports of Codex, Claude Code, and T3 turn time per project. Reads
 local session records from both harnesses on the same machine. No keyboard monitoring,
 prompting-time estimates, network service, daemon, or special agent launcher.
 Requires Python 3.10+ and Git for repository/worktree grouping.
@@ -139,22 +139,57 @@ cutoff remains in force. The older Remote Control test with no duration or hooks
 cannot be recovered as an exact timing record.
 
 `turns` labels provider and launcher, and `report` includes per-project source
-subtotals. `--source codex` and `--source claude` filter by launcher; `t3` is
-reserved, not integrated yet. Provider and launcher are separate dimensions:
-a future Claude-through-T3 turn should have provider `claude`, launcher `t3`,
-and count once, not once under each dimension. UAT is independent of this filter.
+subtotals. `--source codex`, `--source claude`, and `--source t3` filter by
+launcher. Provider and launcher are separate dimensions: a Claude-through-T3
+turn has provider `claude`, launcher `t3`, and counts once, not once under each
+dimension. UAT is independent of this filter.
 Local `turn_sources` stores hook provenance; legacy records infer provider from
 the session namespace. Cloud timing records explicitly carry `provider`,
 `launcher`, and `timing`, with unchanged record keys and combined daily totals.
 The dashboard still shows combined agent totals; no UI source selector is added.
-Future T3 integration must correlate its provider-native identity with these
-records before ingestion; it must not simply add a second set of intervals.
+T3 attribution reconciles with native records as described below.
 
 Verified on Claude Code 2.1.312: interactive transcript timing (10.592 seconds),
 and a headless SDK-mode live test with hooks (10.890 seconds vs SDK 11.004).
 The latter exercises the previously missing headless timing path. Acceptance
 from the user's Remote Control client is a separate final check.
 Official lifecycle reference: https://code.claude.com/docs/en/hooks
+
+### T3 Code
+
+The CLI and private five-minute cloud sync read T3's local v2 projection database
+in read-only mode: `~/.t3/userdata/statev2.sqlite`. `T3CODE_HOME` changes the base
+directory; CLI `--t3-db PATH` overrides the database path. An absent database is
+optional. An incompatible schema produces a coverage warning without reading
+messages or credentials. The installed v2 schema is supported; the old
+`state.sqlite` format and other providers besides Codex/Claude are not.
+
+Only actual top-level provider turns count. Importing a conversation into T3
+alone does not reclassify its native history. Subagents and queued work without
+a start are excluded; unfinished work stays incomplete. Project attribution
+uses the provider working directory with project/worktree metadata as fallback.
+
+- Codex matches on its native session and strong turn ID.
+- Claude's T3 turn ref is a weak message cursor. An unambiguous overlapping
+  native interval in the same native session is linked and the binding is saved.
+  Multiple candidates produce an ambiguity warning, not another counted turn.
+- Existing native record IDs and measured durations are retained, with
+  `launcher=t3` and the actual provider (`claude` or `codex`). If no native record
+  exists, T3's explicit start/end timestamps provide the interval. A native
+  record lacking an end can use T3's explicit completion.
+- If native data arrives after a T3 fallback, `turn_aliases` excludes the duplicate
+  locally while retaining it for audit. The cloud mirror updates its old key to a
+  zero-duration `superseded` record and recalculates affected days, including
+  midnight tails. This avoids orphaned double-counted records in the upsert-only
+  cloud mirror. A late ambiguous match quarantines the T3 fallback instead.
+
+T3 does not add a second timer on top of Codex/Claude. Reports show exclusive
+launcher totals, with provider detail beneath them. UAT remains independent.
+The importer reads T3 projection tables, never auth tables, configuration,
+message content, tool arguments, or transcript text. T3's schema is internal;
+future upgrades may require a compatible importer update. Attribution is
+updated on the next report/sync, so a new native row may briefly show its native
+launcher before T3's projection is reconciled.
 
 ### Agent sources
 

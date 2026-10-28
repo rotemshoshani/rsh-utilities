@@ -17,6 +17,14 @@ CREATE TABLE IF NOT EXISTS files (
     invalid INTEGER DEFAULT 0, unsupported INTEGER DEFAULT 0,
     activity INTEGER DEFAULT 0, boundaries INTEGER DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS turn_sources (
+    session TEXT, turn TEXT, provider TEXT NOT NULL, launcher TEXT NOT NULL,
+    timing TEXT NOT NULL, PRIMARY KEY(session,turn)
+);
+CREATE TABLE IF NOT EXISTS turn_aliases (
+    session TEXT, turn TEXT, canonical_session TEXT, canonical_turn TEXT, reason TEXT,
+    PRIMARY KEY(session,turn)
+);
 CREATE TABLE IF NOT EXISTS turns (
     session TEXT, turn TEXT, project TEXT NOT NULL,
     start REAL, end REAL, status TEXT NOT NULL DEFAULT 'incomplete',
@@ -99,6 +107,13 @@ def _metadata(payload: dict, projects: dict[str, str]) -> tuple[str, str, bool] 
     return sid, projects[cwd], excluded
 
 
+def native_source(db: sqlite3.Connection, session: str, turn: str, provider: str) -> None:
+    # A late native event refines the measurement, without erasing T3 attribution.
+    db.execute("""INSERT INTO turn_sources VALUES (?,?,?,?, 'transcript')
+        ON CONFLICT(session,turn) DO UPDATE SET timing='transcript'""",
+               (session, turn, provider, provider))
+
+
 def _event(db: sqlite3.Connection, record: dict, session: str, project: str,
            since: float) -> bool:
     """Return False for unusable timing, never infer endpoints from message text."""
@@ -132,6 +147,7 @@ def _event(db: sqlite3.Connection, record: dict, session: str, project: str,
             db.execute('''INSERT INTO turns(session,turn,project,start) VALUES (?,?,?,?)
                 ON CONFLICT(session,turn) DO UPDATE SET start=excluded.start, project=excluded.project''',
                        (session, tid, project, start))
+            native_source(db, session, tid, 'codex')
         return True
     old = db.execute('SELECT start FROM turns WHERE session=? AND turn=?', (session, tid)).fetchone()
     start = old['start'] if old else timestamp(payload.get('started_at'))
@@ -146,6 +162,7 @@ def _event(db: sqlite3.Connection, record: dict, session: str, project: str,
     db.execute('''INSERT INTO turns(session,turn,project,start,end,status) VALUES (?,?,?,?,?,?)
         ON CONFLICT(session,turn) DO UPDATE SET end=excluded.end, status=excluded.status''',
                (session, tid, project, start, end, status))
+    native_source(db, session, tid, 'codex')
     return True
 
 
@@ -252,6 +269,7 @@ def union_seconds(intervals: list[tuple[float, float]]) -> float:
 def report_rows(db: sqlite3.Connection, start: float, end: float,
                 project: str | None = None) -> list[dict]:
     rows = db.execute('''SELECT * FROM turns WHERE start < ?
+        AND NOT EXISTS (SELECT 1 FROM turn_aliases a WHERE a.session=turns.session AND a.turn=turns.turn)
         AND ((end IS NOT NULL AND end > ?) OR (end IS NULL AND start >= ?))
         ORDER BY start,session,turn''', (end, start, start))
     result = []

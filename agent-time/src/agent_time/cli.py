@@ -48,6 +48,7 @@ def parser() -> argparse.ArgumentParser:
                    default=Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex'))))
     p.add_argument('--claude-home', type=Path,
                    default=Path(os.environ.get('CLAUDE_CONFIG_DIR', str(Path.home() / '.claude'))))
+    p.add_argument('--t3-db', type=Path, default=Path(os.environ.get('T3CODE_HOME', str(Path.home() / '.t3'))) / 'userdata/statev2.sqlite')
     p.add_argument('--data-dir', type=Path,
                    default=Path(os.environ.get('XDG_DATA_HOME', str(Path.home() / '.local/share'))) / 'agent-time')
     commands = p.add_subparsers(dest='command', required=True)
@@ -61,7 +62,7 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument('--from', dest='date_from', metavar='YYYY-MM-DD')
         sub.add_argument('--to', dest='date_to', metavar='YYYY-MM-DD')
         sub.add_argument('--project', type=Path)
-        sub.add_argument('--source', choices=('codex', 'claude', 't3'), help='Filter by launcher; T3 is reserved for its future integration.')
+        sub.add_argument('--source', choices=('codex', 'claude', 't3'), help='Filter by launcher (Codex, Claude, or T3).')
     return p
 
 
@@ -87,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
             print('Tracking turns starting from ' + datetime.fromtimestamp(since).astimezone().isoformat())
             return 0
         since = tracking_start(db)
-        coverage = ingest_all(db, args.codex_home.expanduser(), args.claude_home.expanduser())
+        coverage = ingest_all(db, args.codex_home.expanduser(), args.claude_home.expanduser(), args.t3_db.expanduser())
         start, end = bounds
         selected = project_for(str(args.project)) if args.project else None
         rows = report_rows(db, start, end, selected)
@@ -132,11 +133,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f'Total estimated UAT: {duration(overall)}')
         if not rows:
             print('No tracked agent turns in this range.')
-        incomplete = db.execute("SELECT COUNT(*) FROM turns WHERE end IS NULL").fetchone()[0]
+        incomplete = db.execute("SELECT COUNT(*) FROM turns WHERE end IS NULL AND NOT EXISTS (SELECT 1 FROM turn_aliases a WHERE a.session=turns.session AND a.turn=turns.turn)").fetchone()[0]
         print(f"Coverage: {coverage['files']} session files; {coverage['excluded']} subagent files excluded; "
               f"{incomplete} unfinished turns across all dates (excluded from totals).")
         print(f"Claude: {coverage['claude_files']} session files; {coverage['claude_durations']} duration records; "
               f"{coverage['claude_excluded']} sidechain records excluded. Missing durations are not estimated.")
+        print(f"T3: {coverage.get('t3_linked', 0)} native turns linked; {coverage.get('t3_imported', 0)} T3 intervals; "
+              f"{coverage.get('t3_ambiguous', 0)} ambiguous matches; {coverage.get('t3_unsupported', 0)} unsupported.")
         problems = {k: coverage[k] for k in ('unreadable', 'partial', 'invalid', 'unsupported', 'untimed') if coverage[k]}
         if problems or not (coverage['files'] + coverage['claude_files']):
             print('Coverage warning: ' + (', '.join(f'{k}={v}' for k, v in problems.items())
