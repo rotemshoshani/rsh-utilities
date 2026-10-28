@@ -5,6 +5,7 @@ import os
 import sqlite3
 from pathlib import Path
 from .core import ingest, project_for, timestamp, tracking_start
+from .claude_hooks import setup
 
 SCHEMA = '''CREATE TABLE IF NOT EXISTS claude_files (
  path TEXT PRIMARY KEY, device INTEGER, inode INTEGER, offset INTEGER,
@@ -14,6 +15,7 @@ SCHEMA = '''CREATE TABLE IF NOT EXISTS claude_files (
 
 def ingest_claude(db: sqlite3.Connection, home: Path) -> dict[str, int]:
     db.executescript(SCHEMA)
+    setup(db)
     since = tracking_start(db)
     counts = dict.fromkeys(('files', 'unreadable', 'partial', 'invalid', 'unsupported',
                            'activity', 'boundaries', 'excluded', 'untimed'), 0)
@@ -74,6 +76,11 @@ def ingest_claude(db: sqlite3.Connection, home: Path) -> dict[str, int]:
                     if start < since:
                         continue
                     sid = 'claude:' + session
+                    owner = db.execute('SELECT since FROM claude_hook_sessions WHERE session=?', (sid,)).fetchone()
+                    if owner and end >= owner['since']:
+                        # Hooks own this session from activation onward, including missing ends.
+                        # Never count a transcript fallback on top of the live lifecycle record.
+                        continue
                     previous = db.execute('SELECT project FROM turns WHERE session=? LIMIT 1', (sid,)).fetchone()
                     if previous:
                         project = previous['project']

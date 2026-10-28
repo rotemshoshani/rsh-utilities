@@ -101,32 +101,60 @@ Claude Code logs are imported from `~/.claude/projects/*/*.jsonl`, or
 `CLAUDE_CONFIG_DIR` / the global `--claude-home PATH` option. Both the CLI
 reports and the private scheduled cloud sync import both harnesses.
 
-Only explicit `system` / `turn_duration` records are counted. `durationMs`
-is the measured duration; interval start is reconstructed as timestamp minus
-that duration. Thus Claude interval placement, midnight splitting, and overlap
-calculations are approximations, unlike Codex's explicit start/end boundaries.
-Subagent directories and `isSidechain` records are excluded. Partial lines are
-retried, duplicate session/event IDs deduplicate, and missing durations are
-never filled in from message gaps. Session IDs use a `claude:` namespace so
-Codex IDs cannot collide and the source remains identifiable in local/cloud
-records. Existing tracking-start rules still apply; no pre-cutoff backfill.
+Install the local lifecycle plugin once to count Claude Remote Control and
+headless/SDK turns, which may omit transcript duration records:
 
-A duration marker is treated as a completed timing record, not proof that the
-underlying task succeeded. This format has no reliable failure/interruption
-classification. Interrupted, crashed, or headless sessions without these
-markers are not counted. Coverage identifies files containing user activity
-but no supported durations; it does not establish completeness of every turn
-in a mixed file. Do not interpret these totals as complete billing records.
+```bash
+claude plugin marketplace add /absolute/path/to/agent-time --scope user
+claude plugin install agent-time@agent-time-local --scope user
+```
 
-The internal JSONL format is not a documented API. Existing logs from Claude
-Code 2.1.270 were checked. A live interactive CLI smoke test on 2.1.312
-(2026-10-28) created a temporary Python file, passed assertions, and deleted it.
-Its explicit 10.592-second duration imported once with matching project and
-time; reimporting did not duplicate it. Remote Control-originated turns still
-need a separate live acceptance check.
-Official alternatives and lifecycle limitations:
-https://code.claude.com/docs/en/monitoring-usage
-https://code.claude.com/docs/en/hooks#stop
+Start new Claude sessions after installation (restart Remote Control servers).
+The plugin is cached by Claude; after changing its code, update/reinstall it.
+Tracking must already be initialized. `UserPromptSubmit` starts an interval;
+`Stop` closes it, and `StopFailure` marks API failures. The hooks write only
+session IDs, generated timing IDs, project paths, timestamps, and status into
+the local database. Prompt text, responses, tool arguments, and credentials
+are never persisted. Hooks fail open and never change the model's response.
+
+A session belongs to hooks from its first observed prompt onward. Transcript
+`turn_duration` records ending after that point are ignored, preventing two
+collectors from counting the same session's work twice. Earlier history keeps
+its original IDs. Repeated Stop events do not extend a completed turn, except
+an explicit `stop_hook_active` continuation, which updates the same record.
+A new prompt cannot close an unobserved interruption at the later time: the
+old incomplete interval stays excluded. This avoids counting intervening idle
+time, but interrupted/crashed or hook-disabled turns may be undercounted.
+Subagent hooks are excluded. Concurrent prompt steering can leave the earlier
+segment incomplete; this collector does not estimate its missing endpoint.
+Other Stop hooks that block completion can briefly publish a provisional end;
+a subsequent continuation Stop updates it under the same ID.
+
+Without hooks, only explicit `system` / `turn_duration` records count.
+`durationMs` is authoritative; start is reconstructed as timestamp minus duration,
+so midnight splitting and overlap placement are approximate. Subagent logs and
+sidechains are excluded; partial lines retry and duplicate IDs deduplicate.
+Missing durations are never inferred from message gaps. The original tracking
+cutoff remains in force. The older Remote Control test with no duration or hooks
+cannot be recovered as an exact timing record.
+
+`turns` labels provider and launcher, and `report` includes per-project source
+subtotals. `--source codex` and `--source claude` filter by launcher; `t3` is
+reserved, not integrated yet. Provider and launcher are separate dimensions:
+a future Claude-through-T3 turn should have provider `claude`, launcher `t3`,
+and count once, not once under each dimension. UAT is independent of this filter.
+Local `turn_sources` stores hook provenance; legacy records infer provider from
+the session namespace. Cloud timing records explicitly carry `provider`,
+`launcher`, and `timing`, with unchanged record keys and combined daily totals.
+The dashboard still shows combined agent totals; no UI source selector is added.
+Future T3 integration must correlate its provider-native identity with these
+records before ingestion; it must not simply add a second set of intervals.
+
+Verified on Claude Code 2.1.312: interactive transcript timing (10.592 seconds),
+and a headless SDK-mode live test with hooks (10.890 seconds vs SDK 11.004).
+The latter exercises the previously missing headless timing path. Acceptance
+from the user's Remote Control client is a separate final check.
+Official lifecycle reference: https://code.claude.com/docs/en/hooks
 
 ### Agent sources
 

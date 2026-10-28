@@ -12,6 +12,7 @@ from pathlib import Path
 from .core import connect, initialize, project_for, report_rows, totals, tracking_start
 from . import uat
 from .claude import ingest_all
+from .claude_hooks import source_for
 
 
 def date_range(args: argparse.Namespace, today: date | None = None) -> tuple[float, float]:
@@ -60,6 +61,7 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument('--from', dest='date_from', metavar='YYYY-MM-DD')
         sub.add_argument('--to', dest='date_to', metavar='YYYY-MM-DD')
         sub.add_argument('--project', type=Path)
+        sub.add_argument('--source', choices=('codex', 'claude', 't3'), help='Filter by launcher; T3 is reserved for its future integration.')
     return p
 
 
@@ -89,17 +91,21 @@ def main(argv: list[str] | None = None) -> int:
         start, end = bounds
         selected = project_for(str(args.project)) if args.project else None
         rows = report_rows(db, start, end, selected)
+        sources = {(r['session'], r['turn']): source_for(db, r) for r in rows}
+        if args.source:
+            rows = [r for r in rows if sources[(r['session'], r['turn'])]['launcher'] == args.source]
         print(f'{datetime.fromtimestamp(start):%Y-%m-%d} through '
               f'{datetime.fromtimestamp(end - 1):%Y-%m-%d} (local time)')
         print('Tracking since ' + datetime.fromtimestamp(since).astimezone().isoformat())
         if args.command == 'turns':
-            print('Start (local)         Status       Counted time    Project / session / turn')
+            print('Start (local)         Status       Counted time    Provider / launcher / Project / session / turn')
             for row in rows:
                 seconds = row['clip_end'] - row['clip_start'] if row['clip_end'] is not None else None
                 elapsed = duration(seconds) if seconds is not None else 'excluded'
                 print(f"{datetime.fromtimestamp(row['start']):%Y-%m-%d %H:%M:%S}  "
                       f"{row['status']:<12} {elapsed:<15} "
-                      f"{safe(row['project'])} / {safe(row['session'])} / {safe(row['turn'])}")
+                      f"{sources[(row['session'], row['turn'])]['provider']} / "
+                      f"{sources[(row['session'], row['turn'])]['launcher']} / {safe(row['project'])} / {safe(row['session'])} / {safe(row['turn'])}")
         else:
             grouped = defaultdict(list)
             for row in rows:
@@ -112,6 +118,13 @@ def main(argv: list[str] | None = None) -> int:
                       f"{counts['incomplete']:>10}  {duration(agent):>13}  {duration(active):>17}  {safe(project)}")
             agent, active = totals(rows)
             print(f'Total agent time: {duration(agent)}; elapsed active: {duration(active)}')
+            by_source = defaultdict(list)
+            for row in rows:
+                meta = sources[(row['session'], row['turn'])]
+                by_source[(row['project'], meta['provider'], meta['launcher'])].append(row)
+            print('\nAgent time by provider / launcher:')
+            for (project, provider, launcher), items in sorted(by_source.items()):
+                print(f'{duration(totals(items)[0]):>13}  {provider} / {launcher}  {safe(project)}')
             estimates, overall = uat.report(db, start, end, selected)
             print('\nEstimated UAT (120s idle tail; overlapping tabs counted once):')
             for project, seconds in sorted(estimates.items()):

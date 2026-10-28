@@ -1,0 +1,12 @@
+{
+  "name": "agent-time-local",
+  "owner": {
+    "name": "Local utilities"
+  },
+  "plugins": [
+    {
+      "name": "agent-time",
+      "source": "./"
+    }
+  ]
+}
