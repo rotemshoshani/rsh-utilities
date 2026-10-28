@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 prompt-queue/config.local.json
+archive/prompt-queue/config.local.json
 
 # Automation/session artifacts
 .planning/

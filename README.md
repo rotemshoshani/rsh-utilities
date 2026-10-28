@@ -30,9 +30,6 @@ Autonomous tmux runner for repeated AI architecture and performance review passe
 ### [cc-commands](cc-commands/)
 Source of truth for custom Claude Code slash commands (`/0-done`, `/0-sync`, `/0-teach`, etc.). Files here get copied into `~/.claude/commands/` via the sync command.
 
-### [herdr-codex-auto](herdr-codex-auto/)
-Event-driven Herdr watcher that presses `p` for Codex command-permission prompts while leaving ordinary questions untouched. It only watches existing Codex panes in the current workspace when explicitly launched. The older tmux implementation remains under `archive/codex-auto/`.
-
 ### [herdr-delay](herdr-delay/)
 Lets a coding agent wait on CI, a preflight script, or a health check without burning a turn per poll. It returns immediately, keeps waiting in a detached process after the agent's turn ends, and prompts the agent once with the result.
 
@@ -44,9 +41,6 @@ fzf picker over Herdr workspace presets. Each `*.json` beside the script defines
 
 ### [council](council/)
 A tmux launcher for brainstorming with two AI CLIs side-by-side — Claude Code on the left, Codex on the right — with a controller bar that relays one model's last reply to the other on a single keypress.
-
-### [codex-delay](codex-delay/)
-Terminal UI for scheduling one prompt into a fresh or existing Codex session after a countdown. It discovers resumable sessions for the current repository and launches through the local `cdx` alias.
 
 ### [dev-env](dev-env/)
 Tiny tmux launcher for projects with two long-running dev processes (default: `npx convex dev` and `npm run dev`). Single-keypress controller for restarting either pane or tearing the session down.
@@ -60,9 +54,6 @@ Browser-based interval/HIIT timer. Open `index.html`, import a CSV of exercises 
 ### [pomodoro-tui](pomodoro-tui/)
 Terminal Pomodoro timer (`pomopp`) that splits work into smaller chunks — `--work 10x5 --rest 10` runs five 10-minute cuts before a rest, so you only think about the next cut rather than a full session.
 
-### [prompt-queue](prompt-queue/)
-Tmux controller for feeding Codex a queue of prompts one at a time. Each prompt gets a fresh Codex process, a 45-minute run window, a captured worker pane, and then a clean worker restart before the next prompt.
-
 ### [prod-env](prod-env/)
 Config-driven tmux dashboard for production monitors. It has structured Convex error filtering, Vercel deployment status and failed-build logs, arbitrary command panes, and automatic layouts for one to nine monitors.
 
@@ -71,3 +62,9 @@ Custom Claude Code statusline (Node script) showing model, current task or GSD p
 
 ### [slp](slp/)
 Repository copy of the `slp` countdown command, accepting seconds, `MM:SS`, or `HH:MM:SS`.
+
+## Archived
+
+`codex-delay`, `herdr-codex-auto`, and `prompt-queue` are retired under
+[`archive/`](archive/). Their code and local queue data are retained for reference;
+they are no longer active launchers or installed skills.

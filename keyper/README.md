@@ -193,7 +193,7 @@ Fan-out commands preflight all destinations and snapshot readable existing value
 
 Vercel Sensitive values become non-readable after creation. They can be written but cannot later be copied out or compared, so keep another canonical copy. Moving into Sensitive storage requires explicit acknowledgement before Keyper deletes the source.
 
-`install-rules` adds Codex command rules and an `AGENTS.md` block that direct agents to use Keyper instead of raw secret-bearing commands.
+`install-rules` installs safety guidance for both Codex and Claude Code. It updates managed blocks in `AGENTS.md` and `CLAUDE.md`, writes Codex command rules, and merges Claude Bash deny rules into `.claude/settings.json` (or the user settings for `--global`). Existing instructions, settings, and symlinks are preserved. Restart existing agent sessions after installation. Permission-bypass launch modes can disable harness enforcement; the guidance still directs secret operations through Keyper.
 
 Twilio uses explicit TSV columns because its JSON mode ignores `--properties`. LiveKit JSON is validated against a field-by-field schema. Known credential, authentication, metadata, header, PIN, and pagination-token fields are dropped; any unknown field aborts the command before output. Imports accept only a target named `.env.local` and atomically write the selected credentials without returning their values.
 

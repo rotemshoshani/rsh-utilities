@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { KeyperError } from "./errors.js";
 
 const START = "<!-- keyper:start -->";
@@ -110,10 +110,14 @@ prefix_rule(
 `;
 
 async function atomicTextWrite(path: string, content: string): Promise<void> {
+  // Preserve shared instruction/settings symlinks instead of replacing the link.
+  try { path = await realpath(path); } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new KeyperError("RULES_INSTALL_FAILED");
+  }
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.keyper-${randomUUID()}`;
   try {
-    await writeFile(temporary, content, { encoding: "utf8", mode: 0o644, flag: "wx" });
+    await writeFile(temporary, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
     await rename(temporary, path);
   } catch {
     throw new KeyperError("RULES_INSTALL_FAILED");
@@ -147,6 +151,51 @@ export async function installGuardrails(target: { global: boolean; project?: str
       throw new KeyperError("RULES_INSTALL_FAILED");
     }
   }
+  const claudeRoot = target.global ? join(homedir(), ".claude") : root;
+  const claudeInstructions = join(claudeRoot, "CLAUDE.md");
+  const settingsPath = target.global
+    ? join(claudeRoot, "settings.json") : join(root, ".claude", "settings.json");
+  const claudeText = mergeAgentBlock(await readOptionalText(claudeInstructions));
+  const settingsText = mergeClaudeSettings(await readOptionalText(settingsPath));
   await atomicTextWrite(agentsPath, mergeAgentBlock(existing));
   await atomicTextWrite(rulesPath, CODEX_RULES);
+  await atomicTextWrite(claudeInstructions, claudeText);
+  await atomicTextWrite(settingsPath, settingsText);
 }
+
+function mergeClaudeSettings(existing: string): string {
+  // Settings may contain private configuration. Merge internally and never log it.
+  try {
+    const settings: unknown = JSON.parse(existing || "{}");
+    if (!isObject(settings) || (settings.permissions !== undefined && !isObject(settings.permissions))) {
+      throw new Error();
+    }
+    const permissions = isObject(settings.permissions) ? settings.permissions : {};
+    if (permissions.deny !== undefined && (!Array.isArray(permissions.deny) || permissions.deny.some((rule: unknown) => typeof rule !== "string"))) {
+      throw new Error();
+    }
+    permissions.deny = [...new Set([...(Array.isArray(permissions.deny) ? permissions.deny : []), ...CLAUDE_DENY_RULES])];
+    settings.permissions = permissions;
+    return `${JSON.stringify(settings, null, 2)}\n`;
+  } catch {
+    throw new KeyperError("RULES_INSTALL_FAILED");
+  }
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function readOptionalText(path: string): Promise<string> {
+  try { return await readFile(path, "utf8"); } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw new KeyperError("RULES_INSTALL_FAILED");
+  }
+}
+
+export const CLAUDE_DENY_RULES = [
+  ...["vercel env", "convex env", "wrangler auth token", "wrangler@latest auth token"].flatMap(command =>
+    ["", "npx ", "npx -y ", "npx --yes ", "npx --no-install ", "bunx ", "pnpm exec "].map(prefix => `Bash(${prefix}${command} *)`)
+  ),
+  "Bash(twilio *)", "Bash(lk *)"
+];
