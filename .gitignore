@@ -19,3 +19,6 @@ __pycache__/
 Thumbs.db
 *.swp
 *.swo
+
+# Private machine-specific operations guide
+/thinkpad-modes/OPERATIONS.md
