@@ -119,9 +119,11 @@ but no supported durations; it does not establish completeness of every turn
 in a mixed file. Do not interpret these totals as complete billing records.
 
 The internal JSONL format is not a documented API. Existing logs from Claude
-Code 2.1.270 were checked; the installed CLI was updated to 2.1.312. A fresh
-model-response smoke test was blocked by the configured account's credit or
-billing status, so new-version live duration emission remains unverified.
+Code 2.1.270 were checked. A live interactive CLI smoke test on 2.1.312
+(2026-10-28) created a temporary Python file, passed assertions, and deleted it.
+Its explicit 10.592-second duration imported once with matching project and
+time; reimporting did not duplicate it. Remote Control-originated turns still
+need a separate live acceptance check.
 Official alternatives and lifecycle limitations:
 https://code.claude.com/docs/en/monitoring-usage
 https://code.claude.com/docs/en/hooks#stop
