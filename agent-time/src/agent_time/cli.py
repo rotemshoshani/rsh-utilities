@@ -9,8 +9,9 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, time as day_time, timedelta
 from pathlib import Path
 
-from .core import connect, ingest, initialize, project_for, report_rows, totals, tracking_start
+from .core import connect, initialize, project_for, report_rows, totals, tracking_start
 from . import uat
+from .claude import ingest_all
 
 
 def date_range(args: argparse.Namespace, today: date | None = None) -> tuple[float, float]:
@@ -41,9 +42,11 @@ def safe(text: str) -> str:
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog='agent-time', description='Local Codex turn time by project; no prompting-time estimates.')
+    p = argparse.ArgumentParser(prog='agent-time', description='Local Codex and Claude Code turn time by project; no prompting-time estimates.')
     p.add_argument('--codex-home', type=Path,
                    default=Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex'))))
+    p.add_argument('--claude-home', type=Path,
+                   default=Path(os.environ.get('CLAUDE_CONFIG_DIR', str(Path.home() / '.claude'))))
     p.add_argument('--data-dir', type=Path,
                    default=Path(os.environ.get('XDG_DATA_HOME', str(Path.home() / '.local/share'))) / 'agent-time')
     commands = p.add_subparsers(dest='command', required=True)
@@ -82,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
             print('Tracking turns starting from ' + datetime.fromtimestamp(since).astimezone().isoformat())
             return 0
         since = tracking_start(db)
-        coverage = ingest(db, args.codex_home.expanduser())
+        coverage = ingest_all(db, args.codex_home.expanduser(), args.claude_home.expanduser())
         start, end = bounds
         selected = project_for(str(args.project)) if args.project else None
         rows = report_rows(db, start, end, selected)
@@ -119,8 +122,10 @@ def main(argv: list[str] | None = None) -> int:
         incomplete = db.execute("SELECT COUNT(*) FROM turns WHERE end IS NULL").fetchone()[0]
         print(f"Coverage: {coverage['files']} session files; {coverage['excluded']} subagent files excluded; "
               f"{incomplete} unfinished turns across all dates (excluded from totals).")
+        print(f"Claude: {coverage['claude_files']} session files; {coverage['claude_durations']} duration records; "
+              f"{coverage['claude_excluded']} sidechain records excluded. Missing durations are not estimated.")
         problems = {k: coverage[k] for k in ('unreadable', 'partial', 'invalid', 'unsupported', 'untimed') if coverage[k]}
-        if problems or not coverage['files']:
+        if problems or not (coverage['files'] + coverage['claude_files']):
             print('Coverage warning: ' + (', '.join(f'{k}={v}' for k, v in problems.items())
                                          or 'no session files found') + '.')
         print('Turn duration includes tools/tests; time between turns and prompting time are excluded.')

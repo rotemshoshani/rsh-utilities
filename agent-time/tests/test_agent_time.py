@@ -289,7 +289,7 @@ class TrackerTests(unittest.TestCase):
         self.assertEqual(self.rows()[0]['project'], str(self.project))
 
     def test_cli_init_report_turns_and_invalid_dates(self):
-        args = ['--codex-home', str(self.home), '--data-dir', str(self.root / 'cli')]
+        args = ['--codex-home', str(self.home), '--claude-home', str(self.root / 'claude'), '--data-dir', str(self.root / 'cli')]
         output = io.StringIO()
         with contextlib.redirect_stdout(output), patch('agent_time.cli.time.time', return_value=BASE):
             self.assertEqual(main(args + ['init']), 0)

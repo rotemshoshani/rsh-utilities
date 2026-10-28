@@ -1,7 +1,7 @@
 # agent-time
 
-Local terminal reports of Codex turn time per project. Reads Codex CLI and
-ChatGPT desktop session records on the same machine. No keyboard monitoring,
+Local terminal reports of Codex and Claude Code turn time per project. Reads
+local session records from both harnesses on the same machine. No keyboard monitoring,
 prompting-time estimates, network service, daemon, or special agent launcher.
 Requires Python 3.10+ and Git for repository/worktree grouping.
 
@@ -94,6 +94,37 @@ Run `agent-time report --project /path/to/project` to see **Estimated UAT**.
 The collector adds `uat_tabs` (anonymous sequencing state) and `uat_intervals`
 to the existing local SQLite database, preserving the agent tracking cutoff
 and history. Its `/health` endpoint reports only service/project metadata.
+
+### Claude Code
+
+Claude Code logs are imported from `~/.claude/projects/*/*.jsonl`, or
+`CLAUDE_CONFIG_DIR` / the global `--claude-home PATH` option. Both the CLI
+reports and the private scheduled cloud sync import both harnesses.
+
+Only explicit `system` / `turn_duration` records are counted. `durationMs`
+is the measured duration; interval start is reconstructed as timestamp minus
+that duration. Thus Claude interval placement, midnight splitting, and overlap
+calculations are approximations, unlike Codex's explicit start/end boundaries.
+Subagent directories and `isSidechain` records are excluded. Partial lines are
+retried, duplicate session/event IDs deduplicate, and missing durations are
+never filled in from message gaps. Session IDs use a `claude:` namespace so
+Codex IDs cannot collide and the source remains identifiable in local/cloud
+records. Existing tracking-start rules still apply; no pre-cutoff backfill.
+
+A duration marker is treated as a completed timing record, not proof that the
+underlying task succeeded. This format has no reliable failure/interruption
+classification. Interrupted, crashed, or headless sessions without these
+markers are not counted. Coverage identifies files containing user activity
+but no supported durations; it does not establish completeness of every turn
+in a mixed file. Do not interpret these totals as complete billing records.
+
+The internal JSONL format is not a documented API. Existing logs from Claude
+Code 2.1.270 were checked; the installed CLI was updated to 2.1.312. A fresh
+model-response smoke test was blocked by the configured account's credit or
+billing status, so new-version live duration emission remains unverified.
+Official alternatives and lifecycle limitations:
+https://code.claude.com/docs/en/monitoring-usage
+https://code.claude.com/docs/en/hooks#stop
 
 ### Agent sources
 
