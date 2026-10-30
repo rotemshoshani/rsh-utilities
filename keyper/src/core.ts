@@ -1,7 +1,9 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { requireAlias, requireName } from "./config.js";
+import { requireAlias, requireName, requireTool } from "./config.js";
 import { KeyperError } from "./errors.js";
+import { fileGitStatus, type FileGitStatus } from "./git-status.js";
 import { createProvider } from "./provider.js";
+import { assertSafeTool, environmentValue, runTool, type ToolRunResult } from "./run.js";
 import { issueCloudflareAccessServiceToken, probeCloudflare, type CloudflareProbeResult } from "./issuers/cloudflare-access-service-token.js";
 import type { InventoryEntry, KeyperConfig, SecretReference } from "./types.js";
 
@@ -53,6 +55,20 @@ export interface FanoutResult {
 export type CompareResult = "equal" | "different" | "missing" | "locked";
 export type AuditStatus = CompareResult | "failed";
 
+export type ToolStatus = "ok" | "unsafe" | "missing" | "locked" | "failed";
+
+export interface DoctorReport {
+  aliases: Record<string, "ok" | "failed">;
+  files: Record<string, FileGitStatus>;
+  tools: Record<string, ToolStatus>;
+}
+
+export interface ToolResult extends ToolRunResult {
+  injected: string[];
+}
+
+export type ToolRunner = typeof runTool;
+
 export type ProviderFactory = (config: Parameters<typeof createProvider>[0]) => ReturnType<typeof createProvider>;
 
 function equalBuffers(left: Buffer, right: Buffer): boolean {
@@ -87,7 +103,8 @@ export class Keyper {
 
   constructor(
     private readonly config: KeyperConfig,
-    private readonly providerFactory: ProviderFactory = createProvider
+    private readonly providerFactory: ProviderFactory = createProvider,
+    private readonly toolRunner: ToolRunner = runTool
   ) {}
 
   private provider(alias: string): ReturnType<ProviderFactory> {
@@ -498,16 +515,71 @@ export class Keyper {
     await this.provider(from).remove(sourceName);
   }
 
-  async doctor(): Promise<Record<string, "ok" | "failed">> {
-    const result: Record<string, "ok" | "failed"> = {};
+  async run(name: string, args: readonly string[]): Promise<ToolResult> {
+    const tool = requireTool(this.config, name);
+    assertSafeTool(this.config, tool, args);
+    const injected = Object.keys(tool.env).sort();
+    const values: Buffer[] = [];
+    try {
+      const env: Record<string, string> = {};
+      for (const variable of injected) {
+        const reference = tool.env[variable]!;
+        const value = await this.provider(reference.alias).read(requireName(reference.name));
+        values.push(value);
+        env[variable] = environmentValue(value);
+      }
+      const result = await this.toolRunner({
+        command: tool.command,
+        args,
+        cwd: tool.cwd,
+        env,
+        secrets: values,
+        timeoutMs: tool.timeoutSeconds * 1000,
+        maxOutputBytes: tool.maxOutputBytes
+      });
+      return { ...result, injected };
+    } finally {
+      for (const value of values) value.fill(0);
+    }
+  }
+
+  async doctor(): Promise<DoctorReport> {
+    const aliases: DoctorReport["aliases"] = {};
+    const files: DoctorReport["files"] = {};
+    const tools: DoctorReport["tools"] = {};
+    const inventories = new Map<string, InventoryEntry[] | undefined>();
     for (const alias of Object.keys(this.config.aliases).sort()) {
       try {
         await this.provider(alias).doctor();
-        result[alias] = "ok";
+        aliases[alias] = "ok";
       } catch {
-        result[alias] = "failed";
+        aliases[alias] = "failed";
       }
+      const config = this.config.aliases[alias]!;
+      if (config.provider === "local" || config.provider === "structured") files[alias] = await fileGitStatus(config.path);
     }
-    return result;
+    for (const name of Object.keys(this.config.tools ?? {}).sort()) {
+      const tool = this.config.tools![name]!;
+      try {
+        assertSafeTool(this.config, tool);
+      } catch {
+        tools[name] = "unsafe";
+        continue;
+      }
+      let status: ToolStatus = "ok";
+      for (const reference of Object.values(tool.env)) {
+        if (!inventories.has(reference.alias)) {
+          inventories.set(reference.alias, await this.inventory(reference.alias).catch(() => undefined));
+        }
+        const entry = inventories.get(reference.alias)?.find((candidate) => candidate.name === reference.name);
+        const current: ToolStatus = !inventories.get(reference.alias) ? "failed" : !entry ? "missing" : entry.portability === "locked" ? "locked" : "ok";
+        if (current !== "ok") {
+          status = current;
+          break;
+        }
+      }
+      tools[name] = status;
+    }
+    return { aliases, files, tools };
   }
 }

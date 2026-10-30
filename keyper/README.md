@@ -2,7 +2,7 @@
 
 Keyper manages secret values across local/remote environment files, structured JSON, Convex, and Vercel without printing their values. It exists so people and coding agents can perform routine secret operations without putting credentials in terminal output, command arguments, logs, or chat history.
 
-Keyper can list names and portability status, but it has no command that displays a value.
+Keyper can list names and portability status, but it has no command that displays a value. When a task needs a secret *used*—for example, an API call—`keyper run` starts an allowlisted tool with the value in that process's environment and redacts it from the tool's output. That is the sanctioned way for agents to use a secret.
 
 ## Setup
 
@@ -21,6 +21,8 @@ Create the configuration:
 ```sh
 cp .keyper.example.json .keyper.json
 ```
+
+Without `--config`, Keyper uses the nearest `.keyper.json` in the current directory or any parent, then `~/.config/keyper/config.json` (`$XDG_CONFIG_HOME/keyper/config.json` when set). A `CONFIG_INVALID` error names the paths it tried. Relative paths in a configuration resolve against the directory that contains it.
 
 Define aliases for the locations you use. The file contains provider locations only—never credentials or secret values.
 
@@ -66,6 +68,19 @@ Define aliases for the locations you use. The file contains provider locations o
       "accountId": "local:CLOUDFLARE_ACCOUNT_ID",
       "apiToken": "local:CLOUDFLARE_API_TOKEN",
       "tokenName": "service-token"
+    }
+  }
+}
+```
+
+Declare the tools that may use secrets (see [Using a secret](#using-a-secret)):
+
+```json
+{
+  "tools": {
+    "garmin": {
+      "command": ["python3", ".codex/scripts/garmin_api.py"],
+      "env": { "GARMIN_API_KEY": "local:GARMIN_API_KEY" }
     }
   }
 }
@@ -134,6 +149,10 @@ keyper move API_KEY --from local --to convex-dev \
 keyper remove RETIRED_KEY --from vercel-preview \
   --confirm-delete RETIRED_KEY
 
+# Use a secret: run a declared tool with values in its environment only
+keyper run garmin -- activities --start 2026-10-27
+keyper garmin activities --start 2026-10-27
+
 # Install agent safety rules
 keyper install-rules --project /path/to/repository
 keyper install-rules --global
@@ -185,9 +204,27 @@ Reusable audits compare exact bytes without displaying or deriving output from t
 
 An audit reports `equal`, `different`, `missing`, `locked`, or `failed`. `sync` repairs a check from an explicitly selected member using transactional fan-out. Locked values fail because equality cannot be verified and must be recreated with an explicit sensitive copy.
 
+## Using a secret
+
+`keyper run TOOL [--config PATH] [-- ARGS...]` runs a tool declared under `tools`:
+
+- `command` is the program and its fixed arguments. Keyper runs it directly, never through a shell, from the configuration's directory (or `cwd`, relative to it). Arguments after `--` pass through verbatim; Keyper does not parse them.
+- `env` maps child environment-variable names to `ALIAS:NAME` references. Values are read inside Keyper and placed only in the child's environment block—never in arguments, a shell, a temporary file, or a log. Names that steer code loading (`PATH`, `LD_*`, `NODE_OPTIONS`, `PYTHONPATH`, …) are rejected.
+- Optional `timeoutSeconds` (default 120, max 3600) and `maxOutputBytes` (stdout plus stderr, default 4 MiB, max 16 MiB).
+
+Before running, Keyper refuses a tool whose command can only reveal what it was given: environment and file printers (`env`, `printenv`, `set`, `cat`, `sed`, `awk`, `grep`, `head`, `xxd`, `base64`, `jq`, …), launchers (`xargs`, `sudo`, `strace`, `docker`, …), shells, interpreters without a declared script or with inline code (`python3 -c`, `node -e`, …), and any declared or passed argument that names an env file, `/proc/*/environ`, or a configured local/structured secret file.
+
+Keyper buffers the tool's complete stdout and stderr, then replaces every occurrence of each injected value with `[redacted]`: the exact value, its trimmed and CRLF/LF variants, each line of a multi-line value, JSON-escaped, URL-encoded (`%XX` either case, `+` for spaces), hex (either case), and base64/base64url with or without padding—including base64 embedded in a larger payload such as a Basic-auth header. Only after both streams are scrubbed does Keyper print them, followed by one stderr line naming the tool, the injected variable names, the redaction count, and the exit code. The command exits with the tool's exit code.
+
+It fails closed with a sanitized error and no tool output when the output is not UTF-8 text or contains NUL (binary), exceeds `maxOutputBytes`, or the tool times out. Stdin is not connected, so interactive tools are unsupported.
+
+`keyper garmin SUBCOMMAND [ARGS...]` is shorthand for `keyper run garmin -- SUBCOMMAND [ARGS...]`.
+
+Limits: redaction covers the injected values in the encodings above, not arbitrary transformations (for example encryption, hashing, or a value interleaved with other characters); a base64 character that straddles the value and adjacent bytes can remain. A declared tool is trusted code: Keyper keeps values out of the agent's transcript, but cannot stop a tool from writing them to a file or sending them over the network. Output appears only after the tool exits.
+
 ## Safety model
 
-Values stay inside Keyper processes and are transferred through private buffers or stdin. Output contains only names, aliases, operations, portability, status, and sanitized error codes. A normal move deletes its source only after reading the destination and confirming equality internally.
+Values stay inside Keyper processes and are transferred through private buffers or stdin; `keyper run` additionally passes them to a declared tool's environment. Output contains only names, aliases, operations, portability, status, and sanitized error codes. A normal move deletes its source only after reading the destination and confirming equality internally.
 
 Fan-out commands preflight all destinations and snapshot readable existing values. If a later write fails, Keyper rolls back completed writes where possible and reports only `rolled-back`, `rollback-failed`, `failed`, and `not-attempted` statuses. An overwritten locked value cannot be restored because it cannot be read.
 
@@ -196,6 +233,8 @@ Vercel Sensitive values become non-readable after creation. They can be written 
 `install-rules` installs safety guidance for both Codex and Claude Code. It updates managed blocks in `AGENTS.md` and `CLAUDE.md`, writes Codex command rules, and merges Claude Bash deny rules into `.claude/settings.json` (or the user settings for `--global`). Existing instructions, settings, and symlinks are preserved. Restart existing agent sessions after installation. Permission-bypass launch modes can disable harness enforcement; the guidance still directs secret operations through Keyper.
 
 Twilio uses explicit TSV columns because its JSON mode ignores `--properties`. LiveKit JSON is validated against a field-by-field schema. Known credential, authentication, metadata, header, PIN, and pagination-token fields are dropped; any unknown field aborts the command before output. Imports accept only a target named `.env.local` and atomically write the selected credentials without returning their values.
+
+`keyper doctor` checks provider connectivity and, for every `local` and `structured` alias, reports whether its file is `ignored`, `tracked`, `untracked-not-ignored`, `not-in-repo`, or `unknown` according to git (`git check-ignore`, `git ls-files`). `tracked` and `untracked-not-ignored` print a warning. It also reports each tool as `ok`, `unsafe`, `missing` (a referenced name is absent), `locked`, or `failed`. Only names and statuses are printed. `--json` returns `{ "aliases", "files", "tools" }`. Exit status: 5 when an alias fails or a tool is not `ok`, 4 when only file warnings remain, otherwise 0.
 
 ## Matrix test
 

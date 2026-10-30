@@ -60,11 +60,20 @@ export type IssuerConfig = CloudflareAccessServiceTokenIssuer;
 
 export type AliasConfig = LocalAlias | ConvexAlias | VercelAlias | StructuredAlias | SshAlias | SshStructuredAlias | WranglerAlias;
 
+export interface ToolConfig {
+  command: string[];
+  env: Record<string, SecretReference>;
+  cwd: string;
+  timeoutSeconds: number;
+  maxOutputBytes: number;
+}
+
 export interface KeyperConfig {
   version: 1;
   aliases: Record<string, AliasConfig>;
   issuers?: Record<string, IssuerConfig>;
   checks?: Record<string, SecretReference[]>;
+  tools?: Record<string, ToolConfig>;
 }
 
 export interface InventoryEntry {

@@ -29,7 +29,14 @@ export type ErrorCode =
   | "FANOUT_PARTIAL"
   | "ISSUER_EXISTS"
   | "ISSUER_OUTPUTS_REQUIRED"
-  | "RULES_INSTALL_FAILED";
+  | "RULES_INSTALL_FAILED"
+  | "TOOL_NOT_FOUND"
+  | "TOOL_UNSAFE"
+  | "TOOL_UNAVAILABLE"
+  | "TOOL_TIMEOUT"
+  | "VALUE_UNSUPPORTED"
+  | "OUTPUT_TOO_LARGE"
+  | "OUTPUT_UNSAFE";
 
 const messages: Record<ErrorCode, string> = {
   CONFIG_INVALID: "Configuration is missing or invalid.",
@@ -62,14 +69,22 @@ const messages: Record<ErrorCode, string> = {
   FANOUT_PARTIAL: "Not every destination was updated; supported writes were rolled back.",
   ISSUER_EXISTS: "The provider already contains a credential with that configured name.",
   ISSUER_OUTPUTS_REQUIRED: "Every one-time credential output must have at least one destination.",
-  RULES_INSTALL_FAILED: "Agent guardrails could not be installed safely."
+  RULES_INSTALL_FAILED: "Agent guardrails could not be installed safely.",
+  TOOL_NOT_FOUND: "The requested tool is not declared under \"tools\" in the Keyper configuration.",
+  TOOL_UNSAFE: "The tool command or its arguments could reveal secret values and were refused.",
+  TOOL_UNAVAILABLE: "The tool command could not be started.",
+  TOOL_TIMEOUT: "The tool exceeded its time limit and was stopped. Tool output was suppressed.",
+  VALUE_UNSUPPORTED: "A configured value cannot be passed safely through a process environment.",
+  OUTPUT_TOO_LARGE: "The tool output exceeded its size limit. Tool output was suppressed.",
+  OUTPUT_UNSAFE: "The tool output is not UTF-8 text, so redaction cannot be guaranteed. Tool output was suppressed."
 };
 
 export class KeyperError extends Error {
   readonly code: ErrorCode;
 
-  constructor(code: ErrorCode) {
-    super(messages[code]);
+  // Details carry only non-secret context such as configuration paths or rule names.
+  constructor(code: ErrorCode, detail?: string) {
+    super(detail ? `${messages[code]} ${detail}` : messages[code]);
     this.name = "KeyperError";
     this.code = code;
   }

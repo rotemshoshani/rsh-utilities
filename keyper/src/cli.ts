@@ -2,6 +2,7 @@
 import { addAlias, addIssuer, loadConfig, requireAlias, requireName } from "./config.js";
 import { asSafeError, KeyperError } from "./errors.js";
 import { installGuardrails } from "./guardrails.js";
+import { isGitWarning } from "./git-status.js";
 import { Keyper, type Destination, type FanoutResult, type IssueDestination, type IssuerOutput } from "./core.js";
 import { importLiveKit, importTwilio, listLiveKit, listTwilio, useLiveKit, useTwilio } from "./provider-tools.js";
 import type { AliasConfig, IssuerConfig, KeyperConfig } from "./types.js";
@@ -25,6 +26,8 @@ const USAGE = `Usage:
   keyper issuer-add NAME --provider cloudflare-access-service-token [provider options] [--config PATH]
   keyper plan COMMAND ...
   keyper doctor [--json] [--config PATH]
+  keyper run TOOL [--config PATH] [-- ARGS...]
+  keyper garmin [--config PATH] SUBCOMMAND [ARGS...]
   keyper cloudflare-doctor ISSUER --zone DOMAIN [--json] [--config PATH]
   keyper twilio list profiles|accounts|trunks|numbers|routing [--profile NAME]
   keyper twilio use PROFILE
@@ -53,6 +56,8 @@ const HELP: Record<string, string> = {
   "issuer-add": "keyper issuer-add NAME --provider cloudflare-access-service-token --account-id ALIAS:NAME --api-token ALIAS:NAME --token-name NAME [--duration DURATION] [--config PATH]",
   plan: "keyper plan copy|copy-many|sync|move|remove|generate|compose|put|enable|disable|issue ...",
   doctor: "keyper doctor [--json] [--config PATH]",
+  run: "keyper run TOOL [--config PATH] [-- ARGS...]\nRuns a tool declared under \"tools\" in the Keyper configuration with its secrets in the child environment.\nArguments after -- pass through verbatim. Output is redacted; the exit code is the tool's.",
+  garmin: "keyper garmin [--config PATH] SUBCOMMAND [ARGS...]\nShorthand for: keyper run garmin -- SUBCOMMAND [ARGS...]",
   "cloudflare-doctor": "keyper cloudflare-doctor ISSUER --zone DOMAIN [--json] [--config PATH]",
   twilio: "keyper twilio list profiles|accounts|trunks|numbers|routing [--profile NAME]\nkeyper twilio use PROFILE\nkeyper twilio import PROFILE --to PATH/.env.local [--overwrite]",
   livekit: "keyper livekit list projects|trunks|numbers|routing [--project NAME]\nkeyper livekit use PROJECT\nkeyper livekit import PROJECT --to PATH/.env.local [--overwrite]",
@@ -232,6 +237,43 @@ async function readStdin(): Promise<Buffer> {
   }
 }
 
+// Tool arguments are never parsed by Keyper, so they are split off before option parsing.
+async function runTool(command: "run" | "garmin", rest: string[]): Promise<void> {
+  let configPath: string | undefined;
+  let tool = "garmin";
+  let passthrough: string[];
+  if (command === "run") {
+    const separator = rest.indexOf("--");
+    const head = separator === -1 ? rest : rest.slice(0, separator);
+    passthrough = separator === -1 ? [] : rest.slice(separator + 1);
+    if (head.length === 1 && (head[0] === "--help" || head[0] === "-h")) {
+      process.stdout.write(`${HELP.run}\n`);
+      return;
+    }
+    const parsed = parseArgs(head);
+    assertOptions(parsed, ["--config"]);
+    if (parsed.positionals.length !== 1) usageError();
+    tool = parsed.positionals[0]!;
+    configPath = option(parsed, "--config");
+  } else {
+    passthrough = rest;
+    if (passthrough[0] === "--config") {
+      if (!passthrough[1]) usageError();
+      configPath = passthrough[1];
+      passthrough = passthrough.slice(2);
+    }
+    if (passthrough.length === 0) usageError();
+  }
+  const loaded = await loadConfig(configPath);
+  const result = await new Keyper(loaded.config).run(tool, passthrough);
+  process.stdout.write(result.stdout);
+  process.stderr.write(result.stderr);
+  if (result.stderr && !result.stderr.endsWith("\n")) process.stderr.write("\n");
+  // The only Keyper log line: tool name, injected variable names, and counts.
+  process.stderr.write(`run\t${tool}\tinjected=${result.injected.join(",")}\tredacted=${result.redactions}\texit=${result.exitCode}\n`);
+  process.exitCode = result.exitCode;
+}
+
 async function run(): Promise<void> {
   let [command, ...rest] = process.argv.slice(2);
   if (!command || command === "--help" || command === "-h") {
@@ -247,6 +289,11 @@ async function run(): Promise<void> {
     planning = true;
     command = rest.shift();
     if (!command) usageError();
+  }
+  if (command === "run" || command === "garmin") {
+    if (planning) usageError();
+    await runTool(command, rest);
+    return;
   }
   if (rest.includes("--help") || rest.includes("-h")) {
     const help = HELP[command];
@@ -569,8 +616,20 @@ async function run(): Promise<void> {
     if (parsed.positionals.length > 0) usageError();
     const result = await keyper.doctor();
     if (flag(parsed, "--json")) printJson(result);
-    else for (const [alias, status] of Object.entries(result)) process.stdout.write(`${alias}\t${status}\n`);
-    if (Object.values(result).includes("failed")) process.exitCode = 5;
+    else {
+      for (const [alias, status] of Object.entries(result.aliases)) process.stdout.write(`${alias}\t${status}\n`);
+      for (const [alias, status] of Object.entries(result.files)) process.stdout.write(`file\t${alias}\t${status}\n`);
+      for (const [tool, status] of Object.entries(result.tools)) process.stdout.write(`tool\t${tool}\t${status}\n`);
+    }
+    const warnings = Object.entries(result.files).filter(([, status]) => isGitWarning(status));
+    for (const [alias, status] of warnings) {
+      process.stderr.write(status === "tracked"
+        ? `warning FILE_TRACKED: The file for alias ${alias} is tracked by git; remove it from the index and ignore it.\n`
+        : `warning FILE_NOT_IGNORED: The file for alias ${alias} is untracked and not gitignored; add it to .gitignore.\n`);
+    }
+    if (Object.values(result.aliases).includes("failed") || Object.values(result.tools).some((status) => status !== "ok")) {
+      process.exitCode = 5;
+    } else if (warnings.length > 0) process.exitCode = 4;
     return;
   }
 
